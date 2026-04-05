@@ -1,0 +1,29 @@
+[Unit]
+Description=Jarvis Pool Controller
+Documentation=https://github.com/TheBobC/pool-controller
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bobc
+Group=bobc
+WorkingDirectory=/srv/jarvis/pool-controller
+ExecStart=/srv/jarvis/pool-controller/venv/bin/python3 main.py
+Restart=always
+RestartSec=10
+# Give hardware time to settle on reboot before first start
+ExecStartPre=/bin/sleep 5
+
+# Required for GPIO and I2C access
+SupplementaryGroups=gpio i2c dialout
+
+# Never buffer output so journald captures real-time logs
+Environment=PYTHONUNBUFFERED=1
+
+# Hard limits — pool controller should never need more than these
+MemoryMax=128M
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

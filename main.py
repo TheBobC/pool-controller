@@ -1,20 +1,34 @@
 """
-main.py — Jarvis Pool Controller
+main.py — Jarvis Pool Controller  (asyncio entry point)
 
-Connects to MQTT and publishes/subscribes to pool sensor topics.
-All hardware (pump GPIO, ADS1115 ADC, EZO-EC probe) is initialised
-with a try/except so failures are logged but never crash the service.
+Startup sequence:
+  1. Load persisted state from state.json
+  2. Init all hardware — non-fatal, service always starts
+  3. Connect to MQTT broker
+  4. Run four async loops:
+       pump_keepalive   — sends EcoStar RS-485 packet every 500 ms
+       safety_check     — evaluates cell interlocks every 1 s
+       sensor_read      — reads all sensors, publishes every 30 s
+       state_publish    — re-publishes retained topics every 60 s
+     plus mqtt.message_loop() for inbound commands
+  5. Clean shutdown on SIGTERM / SIGINT
+
+All hardware failure modes are non-fatal:  missing /dev nodes, absent
+I2C devices, and GPIO errors are caught and logged as warnings so the
+service keeps running and MQTT stays connected.
 """
 
+import asyncio
 import logging
-import os
 import signal
-import sys
-import time
 
-from dotenv import load_dotenv
-
-load_dotenv()
+import config  # noqa: F401 — loads .env before any other import
+import cell
+import mqtt_client
+import pump
+import safety
+import sensors
+import state
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,143 +38,167 @@ logging.basicConfig(
 logger = logging.getLogger("pool")
 
 # ---------------------------------------------------------------------------
-# Optional hardware: ADS1115
+# Shared mutable state (touched only from asyncio tasks → no locking needed)
 # ---------------------------------------------------------------------------
-ads = None
-chan_orp = None
-chan_ph = None
-try:
-    import board  # type: ignore
-    import busio  # type: ignore
-    import adafruit_ads1x15.ads1115 as ADS  # type: ignore
-    from adafruit_ads1x15.analog_in import AnalogIn  # type: ignore
+_cell_requested: bool = False
+_mqtt: mqtt_client.MQTTClient | None = None
 
-    i2c = busio.I2C(board.SCL, board.SDA)
-    ads = ADS.ADS1115(i2c)
-    chan_orp = AnalogIn(ads, ADS.P0)
-    chan_ph = AnalogIn(ads, ADS.P1)
-    logger.info("ADS1115 initialised")
-except Exception as exc:
-    logger.warning("ADS1115 unavailable: %s", exc)
 
 # ---------------------------------------------------------------------------
-# Optional hardware: EZO-EC conductivity probe (I2C address 0x64)
+# MQTT command handlers
+# Called from paho's thread via call_soon_threadsafe — keep them short
 # ---------------------------------------------------------------------------
-ec_sensor = None
-try:
-    import smbus2  # type: ignore
 
-    bus = smbus2.SMBus(1)
-    EC_ADDR = 0x64
-    # Probe presence check — write a no-op 'i' command
-    bus.write_i2c_block_data(EC_ADDR, 0, [ord("i")])
-    time.sleep(0.3)
-    ec_sensor = bus
-    logger.info("EZO-EC probe found at 0x%02X", EC_ADDR)
-except Exception as exc:
-    logger.warning("EZO-EC unavailable: %s", exc)
+def handle_speed_set(speed: int) -> None:
+    logger.info("← speed/set: %d%%", speed)
+    if speed == 0 and pump.get_speed() > 0:
+        safety.reset_timer()
+    pump.set_speed(speed)
+    state.save({"pump_speed": speed})
+    if _mqtt:
+        _mqtt.publish("pump/speed",   speed,                        retain=True)
+        _mqtt.publish("pump/running", "ON" if speed > 0 else "OFF", retain=True)
+
+
+def handle_cell_set(on: bool) -> None:
+    global _cell_requested
+    logger.info("← cell/set: %s", "ON" if on else "OFF")
+    _cell_requested = on
+    state.save({"cell_on": on})
+
 
 # ---------------------------------------------------------------------------
-# Pump module (already non-fatal internally)
+# Async task loops
 # ---------------------------------------------------------------------------
-import pump  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# MQTT
-# ---------------------------------------------------------------------------
-import paho.mqtt.client as mqtt  # noqa: E402
-
-MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-MQTT_USER = os.getenv("MQTT_USER", "")
-MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
-
-BASE_TOPIC = "pool"
-PUMP_CMD_TOPIC = f"{BASE_TOPIC}/pump/set"
-PUMP_STATE_TOPIC = f"{BASE_TOPIC}/pump/state"
-STATUS_TOPIC = f"{BASE_TOPIC}/status"
-
-
-def on_connect(client, userdata, flags, reason_code, properties):
-    if reason_code.is_failure:
-        logger.warning("MQTT connect failed: %s", reason_code)
-    else:
-        logger.info("MQTT connected to %s:%s", MQTT_HOST, MQTT_PORT)
-        client.subscribe(PUMP_CMD_TOPIC)
-        client.publish(STATUS_TOPIC, "online", retain=True)
-
-
-def on_disconnect(client, userdata, flags, reason_code, properties):
-    logger.warning("MQTT disconnected: %s — will auto-reconnect", reason_code)
-
-
-def on_message(client, userdata, msg):
-    topic = msg.topic
-    payload = msg.payload.decode("utf-8", errors="replace").strip().lower()
-    logger.info("MQTT ← %s: %s", topic, payload)
-
-    if topic == PUMP_CMD_TOPIC:
-        state = payload in ("on", "1", "true")
-        pump.set_pump(state)
-        client.publish(PUMP_STATE_TOPIC, "ON" if state else "OFF", retain=True)
-
-
-def read_sensors(client):
-    """Read available sensors and publish results."""
-    if chan_orp is not None:
+async def pump_keepalive_loop(shutdown: asyncio.Event) -> None:
+    """Send EcoStar RS-485 keep-alive every 500 ms.  Must not miss ticks."""
+    while not shutdown.is_set():
+        pump.send_keepalive()
         try:
-            orp_v = chan_orp.voltage
-            client.publish(f"{BASE_TOPIC}/orp/voltage", round(orp_v, 4))
-        except Exception as exc:
-            logger.debug("ORP read error: %s", exc)
+            await asyncio.wait_for(shutdown.wait(), timeout=config.PUMP_KEEPALIVE_S)
+        except asyncio.TimeoutError:
+            pass
 
-    if chan_ph is not None:
+
+async def safety_check_loop(shutdown: asyncio.Event) -> None:
+    """Evaluate cell interlocks every 1 s."""
+    while not shutdown.is_set():
+        flow = sensors.read_flow()
+        cell_on = safety.update(
+            pump_speed=pump.get_speed(),
+            flow_ok=flow,
+            cell_requested=_cell_requested,
+            set_cell_fn=cell.set_cell,
+        )
+        if _mqtt:
+            _mqtt.publish("cell/state", "ON" if cell_on else "OFF", retain=True)
         try:
-            ph_v = chan_ph.voltage
-            client.publish(f"{BASE_TOPIC}/ph/voltage", round(ph_v, 4))
-        except Exception as exc:
-            logger.debug("pH read error: %s", exc)
+            await asyncio.wait_for(shutdown.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
 
-    if ec_sensor is not None:
+
+async def sensor_read_loop(shutdown: asyncio.Event) -> None:
+    """Read sensors and publish every 30 s.  EC probe blocks ~650 ms — run in executor."""
+    loop = asyncio.get_running_loop()
+    while not shutdown.is_set():
+        water_t  = await loop.run_in_executor(None, sensors.read_water_temp)
+        air_t    = await loop.run_in_executor(None, sensors.read_air_temp)
+        current  = await loop.run_in_executor(None, sensors.read_current)
+        ec       = await loop.run_in_executor(None, sensors.read_conductivity)
+        flow     = sensors.read_flow()
+
+        if _mqtt and _mqtt.is_connected():
+            if water_t is not None:
+                _mqtt.publish("sensors/water_temp",   water_t)
+            if air_t is not None:
+                _mqtt.publish("sensors/air_temp",     air_t)
+            if current is not None:
+                _mqtt.publish("sensors/current",      current)
+            if ec is not None:
+                _mqtt.publish("sensors/conductivity", ec)
+            _mqtt.publish("sensors/flow", "ON" if flow else "OFF")
+
         try:
-            ec_sensor.write_i2c_block_data(0x64, 0, [ord("r")])
-            time.sleep(0.6)
-            raw = ec_sensor.read_i2c_block_data(0x64, 0, 20)
-            response = bytes(raw[1:]).split(b"\x00")[0].decode()
-            client.publish(f"{BASE_TOPIC}/ec", response)
-        except Exception as exc:
-            logger.debug("EC read error: %s", exc)
+            await asyncio.wait_for(shutdown.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            pass
 
 
-def main():
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="jarvis-pool")
-    client.will_set(STATUS_TOPIC, "offline", retain=True)
-    if MQTT_USER:
-        client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
-    client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
-    client.on_message = on_message
+async def state_publish_loop(shutdown: asyncio.Event) -> None:
+    """Re-publish retained state every 60 s (handles HA restarts)."""
+    while not shutdown.is_set():
+        if _mqtt and _mqtt.is_connected():
+            spd = pump.get_speed()
+            _mqtt.publish("pump/speed",   spd,                         retain=True)
+            _mqtt.publish("pump/running", "ON" if spd > 0 else "OFF",  retain=True)
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=60.0)
+        except asyncio.TimeoutError:
+            pass
 
-    # Non-blocking connect with automatic reconnect
-    client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
-    client.loop_start()
 
-    def _shutdown(sig, frame):
-        logger.info("Shutting down…")
-        client.publish(STATUS_TOPIC, "offline", retain=True)
-        client.loop_stop()
-        client.disconnect()
-        pump.cleanup()
-        sys.exit(0)
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
+async def main() -> None:
+    global _mqtt, _cell_requested
 
-    logger.info("Pool controller running (Ctrl-C to stop)")
-    while True:
-        read_sensors(client)
-        time.sleep(30)
+    # --- Restore persisted state ---
+    saved = state.load()
+    _cell_requested = bool(saved.get("cell_on", False))
+    pump.set_speed(int(saved.get("pump_speed", 0)))
+
+    # --- Hardware init (all non-fatal) ---
+    pump.init()
+    cell.init()
+    sensors.init()
+
+    # --- MQTT ---
+    loop = asyncio.get_running_loop()
+    _mqtt = mqtt_client.MQTTClient(loop)
+    _mqtt.register_speed_handler(handle_speed_set)
+    _mqtt.register_cell_handler(handle_cell_set)
+    _mqtt.connect()
+
+    # --- Shutdown signal ---
+    shutdown = asyncio.Event()
+
+    def _request_shutdown(sig_name: str) -> None:
+        logger.info("Received %s — shutting down", sig_name)
+        shutdown.set()
+
+    loop.add_signal_handler(signal.SIGINT,  lambda: _request_shutdown("SIGINT"))
+    loop.add_signal_handler(signal.SIGTERM, lambda: _request_shutdown("SIGTERM"))
+
+    logger.info("Pool controller running  (pump=%d%%, cell_req=%s)",
+                pump.get_speed(), _cell_requested)
+
+    # --- Run all tasks concurrently ---
+    tasks = [
+        asyncio.create_task(pump_keepalive_loop(shutdown),  name="pump-keepalive"),
+        asyncio.create_task(safety_check_loop(shutdown),    name="safety"),
+        asyncio.create_task(sensor_read_loop(shutdown),     name="sensors"),
+        asyncio.create_task(state_publish_loop(shutdown),   name="state-pub"),
+        asyncio.create_task(_mqtt.message_loop(),            name="mqtt-rx"),
+    ]
+
+    await shutdown.wait()
+
+    # --- Clean shutdown ---
+    logger.info("Stopping tasks…")
+    for t in tasks:
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    pump.close()
+    cell.close()
+    sensors.cleanup()
+    _mqtt.disconnect()
+    logger.info("Pool controller stopped")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
