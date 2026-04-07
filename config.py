@@ -54,7 +54,7 @@ ACS_ZERO_V      = 2.5    # Volts at zero current (VCC/2)
 # ---------------------------------------------------------------------------
 # Atlas EZO-EC conductivity probe
 # ---------------------------------------------------------------------------
-EC_PORT    = os.getenv("EC_PORT", "/dev/ttyAMA0")
+EC_PORT    = os.getenv("EC_PORT", "/dev/serial0")
 EC_BAUD    = int(os.getenv("EC_BAUD", "9600"))
 EC_TIMEOUT = 2.0  # Serial read timeout (s)
 
