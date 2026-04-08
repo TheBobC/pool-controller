@@ -1,6 +1,6 @@
 # Jarvis Pool Controller — Architecture Reference
 
-Raspberry Pi Zero 2W (`sat4`, `10.0.0.152`) running Raspberry Pi OS Bookworm.
+Raspberry Pi 3B+ (`sat4`, `10.0.0.152`) running Raspberry Pi OS Bookworm.
 Part of the Jarvis home-automation ecosystem.
 
 ---
@@ -84,21 +84,21 @@ whenever either condition is lost.
 
 ## MQTT Topics
 
-Broker: `10.0.0.16:1883`  |  Prefix: `jarvis/pool`
+Broker: `10.0.0.16:1883`  |  Prefix: `jarvis/pool/TudorPool`
 
 | Topic | Dir | Payload | Retain |
 |---|---|---|---|
-| `jarvis/pool/status` | pub | `online` / `offline` (LWT) | ✓ |
-| `jarvis/pool/pump/speed` | pub | `0`–`100` | ✓ |
-| `jarvis/pool/pump/speed/set` | sub | `0`–`100` | — |
-| `jarvis/pool/pump/running` | pub | `ON` / `OFF` | ✓ |
-| `jarvis/pool/cell/state` | pub | `ON` / `OFF` | ✓ |
-| `jarvis/pool/cell/set` | sub | `ON` / `OFF` | — |
-| `jarvis/pool/sensors/water_temp` | pub | °C float | — |
-| `jarvis/pool/sensors/air_temp` | pub | °C float | — |
-| `jarvis/pool/sensors/current` | pub | A float (signed) | — |
-| `jarvis/pool/sensors/conductivity` | pub | µS/cm float | — |
-| `jarvis/pool/sensors/flow` | pub | `ON` / `OFF` | — |
+| `jarvis/pool/TudorPool/status` | pub | `online` / `offline` (LWT) | ✓ |
+| `jarvis/pool/TudorPool/pump/speed` | pub | `0`–`100` | ✓ |
+| `jarvis/pool/TudorPool/pump/speed/set` | sub | `0`–`100` | — |
+| `jarvis/pool/TudorPool/pump/running` | pub | `ON` / `OFF` | ✓ |
+| `jarvis/pool/TudorPool/cell/state` | pub | `ON` / `OFF` | ✓ |
+| `jarvis/pool/TudorPool/cell/set` | sub | `ON` / `OFF` | — |
+| `jarvis/pool/TudorPool/sensors/water_temp` | pub | °C float | — |
+| `jarvis/pool/TudorPool/sensors/air_temp` | pub | °C float | — |
+| `jarvis/pool/TudorPool/sensors/current` | pub | A float (signed) | — |
+| `jarvis/pool/TudorPool/sensors/conductivity` | pub | µS/cm float | — |
+| `jarvis/pool/TudorPool/sensors/flow` | pub | `ON` / `OFF` | — |
 
 HA auto-discovery prefix: `homeassistant/`
 

@@ -12,7 +12,7 @@ MQTT_HOST = os.getenv("MQTT_HOST", "10.0.0.16")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USER = os.getenv("MQTT_USER", "")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
-TOPIC_PREFIX = os.getenv("MQTT_TOPIC_PREFIX", "jarvis/pool")
+TOPIC_PREFIX = os.getenv("MQTT_TOPIC_PREFIX", "jarvis/pool/TudorPool")
 HA_DISCOVERY_PREFIX = os.getenv("HA_DISCOVERY_PREFIX", "homeassistant")
 
 # ---------------------------------------------------------------------------

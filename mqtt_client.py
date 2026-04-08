@@ -5,18 +5,18 @@ paho runs its network loop in a background thread (loop_start).
 Inbound messages are forwarded to the asyncio event loop via
 asyncio.call_soon_threadsafe() into an asyncio.Queue.
 
-MQTT topics  (prefix = jarvis/pool):
-  jarvis/pool/status               LWT  "online" / "offline"
-  jarvis/pool/pump/speed           published  0–100
-  jarvis/pool/pump/speed/set       subscribed 0–100
-  jarvis/pool/pump/running         published  "ON" / "OFF"
-  jarvis/pool/cell/state           published  "ON" / "OFF"
-  jarvis/pool/cell/set             subscribed "ON" / "OFF"
-  jarvis/pool/sensors/water_temp   published  °C
-  jarvis/pool/sensors/air_temp     published  °C
-  jarvis/pool/sensors/current      published  A
-  jarvis/pool/sensors/conductivity published  μS/cm
-  jarvis/pool/sensors/flow         published  "ON" / "OFF"
+MQTT topics  (prefix = jarvis/pool/TudorPool):
+  jarvis/pool/TudorPool/status               LWT  "online" / "offline"
+  jarvis/pool/TudorPool/pump/speed           published  0–100
+  jarvis/pool/TudorPool/pump/speed/set       subscribed 0–100
+  jarvis/pool/TudorPool/pump/running         published  "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/state           published  "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/set             subscribed "ON" / "OFF"
+  jarvis/pool/TudorPool/sensors/water_temp   published  °C
+  jarvis/pool/TudorPool/sensors/air_temp     published  °C
+  jarvis/pool/TudorPool/sensors/current      published  A
+  jarvis/pool/TudorPool/sensors/conductivity published  μS/cm
+  jarvis/pool/TudorPool/sensors/flow         published  "ON" / "OFF"
 """
 
 import asyncio
@@ -36,7 +36,7 @@ D = config.HA_DISCOVERY_PREFIX
 _DEVICE = {
     "identifiers": ["jarvis_pool"],
     "name": "Jarvis Pool Controller",
-    "model": "Raspberry Pi Zero 2W",
+    "model": "Raspberry Pi 3B+",
     "manufacturer": "Jarvis Home Automation",
 }
 
