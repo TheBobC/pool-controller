@@ -26,18 +26,21 @@ PUMP_KEEPALIVE_S = 0.5  # Packet interval; pump reverts to panel if > ~2s gap
 
 # ---------------------------------------------------------------------------
 # Salt cell — GeeekPi 4-channel relay HAT
+# CH1 = reserved for future lighting (do not use)
+# CH2 + CH3 = polarity relays — both must be energised simultaneously
 # ---------------------------------------------------------------------------
-CELL_I2C_ADDR = int(os.getenv("CELL_I2C_ADDR", "0x10"), 16)
-CELL_RELAY_CH = int(os.getenv("CELL_RELAY_CH", "1"))     # 1-based channel
-CELL_RELAY_INVERT = os.getenv("CELL_RELAY_INVERT", "false").lower() == "true"
+CELL_I2C_ADDR  = int(os.getenv("CELL_I2C_ADDR",   "0x10"), 16)
+CELL_RELAY_CH_A = int(os.getenv("CELL_RELAY_CH_A", "2"))   # 1-based, polarity relay A
+CELL_RELAY_CH_B = int(os.getenv("CELL_RELAY_CH_B", "3"))   # 1-based, polarity relay B
 
 # ---------------------------------------------------------------------------
 # ADS1115 ADC
 # ---------------------------------------------------------------------------
-ADS_I2C_ADDR = int(os.getenv("ADS_I2C_ADDR", "0x48"), 16)
-ADS_CH_WATER_TEMP = 0   # AIN0
-ADS_CH_AIR_TEMP   = 1   # AIN1
-ADS_CH_CURRENT    = 2   # AIN2
+ADS_I2C_ADDR    = int(os.getenv("ADS_I2C_ADDR", "0x48"), 16)
+ADS_CH_AIR_TEMP    = 0   # AIN0 — air temp thermistor
+ADS_CH_WATER_TEMP  = 1   # AIN1 — water temp thermistor
+ADS_CH_POLARITY    = 2   # AIN2 — salt cell polarity verify (voltage divider)
+ADS_CH_CURRENT     = 3   # AIN3 — ACS712 30A current sensor
 ADS_VCC = float(os.getenv("ADS_VCC", "3.3"))
 
 # Thermistor — Steinhart-Hart B-parameter

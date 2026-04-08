@@ -2,14 +2,15 @@
 sensors.py — All sensor reads.  Every hardware path is non-fatal.
 
 ADS1115 (I2C 0x48):
-  AIN0 → water temperature thermistor (10kΩ NTC, B=3950)
-  AIN1 → air  temperature thermistor  (10kΩ NTC, B=3950)
-  AIN2 → ACS712 30A current sensor    (66 mV/A, zero = 2.5 V)
+  AIN0 → air  temperature thermistor (10kΩ NTC, B=3950)
+  AIN1 → water temperature thermistor (10kΩ NTC, B=3950)
+  AIN2 → salt cell polarity verify    (voltage divider, read-only)
+  AIN3 → ACS712 30A current sensor    (66 mV/A, zero = 2.5 V)
 
 Thermistor voltage-divider: VCC → R_REF(10kΩ) → AINx → Thermistor → GND
 Steinhart-Hart B-parameter:  1/T = 1/T₀ + (1/B)·ln(R/R₀)
 
-Atlas EZO-EC (UART /dev/ttyAMA0 @ 9600):
+Atlas EZO-EC (UART /dev/serial0 @ 9600):
   Send "R\r" → wait 600 ms → read ASCII conductivity in μS/cm.
 
 Flow switch (GPIO 17, active LOW):

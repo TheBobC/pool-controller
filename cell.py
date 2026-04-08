@@ -3,7 +3,10 @@ cell.py — Salt cell on/off via GeeekPi 4-channel relay HAT (I2C 0x10).
 
 The HAT exposes relay state as a single byte; bit N-1 controls relay N
 (1-based).  Writing a 1-bit energises the relay (active HIGH logic).
-Set CELL_RELAY_INVERT=true in .env if your board uses active-LOW logic.
+
+CH1 is reserved for future lighting — never touched here.
+CH2 and CH3 are the polarity relays; both must be energised simultaneously
+to switch the salt cell on, and both released to switch it off.
 
 Safety interlocks live in safety.py — this module only drives hardware.
 """
@@ -18,8 +21,10 @@ _bus = None
 _hw_ok: bool = False
 _cell_on: bool = False
 
-# Pre-computed bit mask for the configured relay channel (1-based → bit index)
-_BIT = 1 << (config.CELL_RELAY_CH - 1)
+# Both polarity relays must switch together (1-based channel → bit index)
+_BIT_A = 1 << (config.CELL_RELAY_CH_A - 1)
+_BIT_B = 1 << (config.CELL_RELAY_CH_B - 1)
+_CELL_MASK = _BIT_A | _BIT_B
 
 
 def init() -> bool:
@@ -31,8 +36,9 @@ def init() -> bool:
         b.read_byte(config.CELL_I2C_ADDR)   # presence check
         _bus = b
         _hw_ok = True
-        logger.info("Cell relay HAT found at I2C 0x%02X, channel %d",
-                    config.CELL_I2C_ADDR, config.CELL_RELAY_CH)
+        logger.info("Cell relay HAT found at I2C 0x%02X, CH%d+CH%d",
+                    config.CELL_I2C_ADDR,
+                    config.CELL_RELAY_CH_A, config.CELL_RELAY_CH_B)
         return True
     except Exception as exc:
         logger.warning("Cell relay HAT unavailable (0x%02X): %s",
@@ -50,7 +56,7 @@ def _write(byte: int) -> None:
 
 
 def set_cell(on: bool) -> bool:
-    """Energise (on=True) or de-energise the relay.
+    """Energise (on=True) or de-energise both polarity relays simultaneously.
     Tracks intent even when hardware is absent.
     Returns True if the hardware write succeeded."""
     global _cell_on
@@ -60,16 +66,15 @@ def set_cell(on: bool) -> bool:
         logger.debug("Cell set to %s (no hardware)", "ON" if on else "OFF")
         return False
 
-    # Apply active-LOW inversion if needed
-    drive_on = (not on) if config.CELL_RELAY_INVERT else on
-
     try:
         current = _read()
-        new = (current | _BIT) if drive_on else (current & ~_BIT)
+        new = (current | _CELL_MASK) if on else (current & ~_CELL_MASK)
         if new == current:
             return True  # no change — skip write and log
         _write(new)
-        logger.info("Cell relay → %s", "ON" if on else "OFF")
+        logger.info("Cell relays (CH%d+CH%d) → %s",
+                    config.CELL_RELAY_CH_A, config.CELL_RELAY_CH_B,
+                    "ON" if on else "OFF")
         return True
     except Exception as exc:
         logger.warning("Cell relay write failed: %s", exc)
