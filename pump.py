@@ -48,25 +48,48 @@ def _build_packet(speed: int) -> bytes:
 # ---------------------------------------------------------------------------
 
 def init() -> bool:
-    """Open the RS-485 serial port.  Non-fatal — returns True on success."""
+    """Open the RS-485 serial port.  Non-fatal — returns True on success.
+
+    serial.Serial() is run in a daemon thread with a 3 s timeout to guard
+    against sc16is7xx driver hangs on Linux 6.x (open() blocks waiting for
+    an interrupt that never fires on idle hardware).
+    """
     global _serial, _connected
-    try:
-        import serial  # type: ignore
-        _serial = serial.Serial(
-            config.PUMP_PORT,
-            baudrate=config.PUMP_BAUD,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=0.1,
-        )
-        _connected = True
-        logger.info("Pump serial opened: %s @ %d baud", config.PUMP_PORT, config.PUMP_BAUD)
-        return True
-    except Exception as exc:
-        logger.warning("Pump RS-485 unavailable (%s): %s", config.PUMP_PORT, exc)
+
+    result: list = [None]
+    error:  list = [None]
+
+    def _open() -> None:
+        try:
+            import serial  # type: ignore
+            result[0] = serial.Serial(
+                config.PUMP_PORT,
+                baudrate=config.PUMP_BAUD,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=0.1,
+            )
+        except Exception as exc:
+            error[0] = exc
+
+    t = threading.Thread(target=_open, daemon=True)
+    t.start()
+    t.join(timeout=3.0)
+
+    if t.is_alive():
+        logger.warning("Pump RS-485 port open timed out — sc16is7xx driver hang on %s", config.PUMP_PORT)
         _connected = False
         return False
+    if error[0] is not None:
+        logger.warning("Pump RS-485 unavailable (%s): %s", config.PUMP_PORT, error[0])
+        _connected = False
+        return False
+
+    _serial = result[0]
+    _connected = True
+    logger.info("Pump serial opened: %s @ %d baud", config.PUMP_PORT, config.PUMP_BAUD)
+    return True
 
 
 def set_speed(speed: int) -> None:

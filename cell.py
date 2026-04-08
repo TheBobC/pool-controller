@@ -66,6 +66,8 @@ def set_cell(on: bool) -> bool:
     try:
         current = _read()
         new = (current | _BIT) if drive_on else (current & ~_BIT)
+        if new == current:
+            return True  # no change — skip write and log
         _write(new)
         logger.info("Cell relay → %s", "ON" if on else "OFF")
         return True
