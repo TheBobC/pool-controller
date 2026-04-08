@@ -72,5 +72,12 @@ def timer_elapsed_s() -> Optional[float]:
     return time.monotonic() - _flow_pump_since
 
 
+def is_interlock_ok() -> bool:
+    """True when pump+flow conditions and warm-up timer are all satisfied."""
+    if _flow_pump_since is None:
+        return False
+    return (time.monotonic() - _flow_pump_since) >= config.CELL_FLOW_DELAY_S
+
+
 def is_cell_requested() -> bool:
     return _cell_requested

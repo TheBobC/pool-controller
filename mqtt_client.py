@@ -6,17 +6,21 @@ Inbound messages are forwarded to the asyncio event loop via
 asyncio.call_soon_threadsafe() into an asyncio.Queue.
 
 MQTT topics  (prefix = jarvis/pool/TudorPool):
-  jarvis/pool/TudorPool/status               LWT  "online" / "offline"
-  jarvis/pool/TudorPool/pump/speed           published  0–100
-  jarvis/pool/TudorPool/pump/speed/set       subscribed 0–100
-  jarvis/pool/TudorPool/pump/running         published  "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/state           published  "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/set             subscribed "ON" / "OFF"
-  jarvis/pool/TudorPool/sensors/water_temp   published  °C
-  jarvis/pool/TudorPool/sensors/air_temp     published  °C
-  jarvis/pool/TudorPool/sensors/current      published  A
-  jarvis/pool/TudorPool/sensors/conductivity published  μS/cm
-  jarvis/pool/TudorPool/sensors/flow         published  "ON" / "OFF"
+  jarvis/pool/TudorPool/status                  LWT  "online" / "offline"
+  jarvis/pool/TudorPool/pump/speed              published  0–100
+  jarvis/pool/TudorPool/pump/speed/set          subscribed 0–100
+  jarvis/pool/TudorPool/pump/running            published  "ON" / "OFF"
+  jarvis/pool/TudorPool/pump/rpm                published  integer RPM (from EcoStar telemetry)
+  jarvis/pool/TudorPool/pump/power              published  watts (from EcoStar telemetry)
+  jarvis/pool/TudorPool/cell/state              published  "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/set                subscribed "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/interlock          published  "ON" / "OFF"
+  jarvis/pool/TudorPool/sensors/water_temp      published  °F
+  jarvis/pool/TudorPool/sensors/air_temp        published  °F
+  jarvis/pool/TudorPool/sensors/current         published  A  (pump circuit, ACS712)
+  jarvis/pool/TudorPool/sensors/cell_current    published  A  (salt cell circuit)
+  jarvis/pool/TudorPool/sensors/conductivity    published  μS/cm
+  jarvis/pool/TudorPool/sensors/flow            published  "ON" / "OFF"
 """
 
 import asyncio
@@ -40,8 +44,16 @@ _DEVICE = {
     "manufacturer": "Jarvis Home Automation",
 }
 
+# Stale retained discovery entries to delete from the broker on connect.
+# Publish empty payload to remove them from HA.
+_TOMBSTONES: list[tuple[str, str]] = [
+    ("sensor", "jarvis_pool_spa_temp"),         # renamed → Pool Air Temperature
+    ("number", "jarvis_pool_pump_rpm_set"),      # removed — RPM is read-only telemetry
+]
+
 # (component, unique_id, discovery_payload)
 _DISCOVERY: list[tuple[str, str, dict]] = [
+    # ---- Controls ----
     ("number", "jarvis_pool_pump_speed", {
         "name": "Pool Pump Speed",
         "unique_id": "jarvis_pool_pump_speed",
@@ -64,11 +76,12 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "retain": True,
         "device": _DEVICE,
     }),
+    # ---- Temperature sensors ----
     ("sensor", "jarvis_pool_water_temp", {
         "name": "Pool Water Temperature",
         "unique_id": "jarvis_pool_water_temp",
         "state_topic": f"{T}/sensors/water_temp",
-        "unit_of_measurement": "°C",
+        "unit_of_measurement": "°F",
         "device_class": "temperature",
         "state_class": "measurement",
         "device": _DEVICE,
@@ -77,11 +90,31 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "name": "Pool Air Temperature",
         "unique_id": "jarvis_pool_air_temp",
         "state_topic": f"{T}/sensors/air_temp",
-        "unit_of_measurement": "°C",
+        "unit_of_measurement": "°F",
         "device_class": "temperature",
         "state_class": "measurement",
         "device": _DEVICE,
     }),
+    # ---- Pump telemetry (populated when EcoStar telemetry reading is implemented) ----
+    ("sensor", "jarvis_pool_pump_rpm", {
+        "name": "Pump RPM",
+        "unique_id": "jarvis_pool_pump_rpm",
+        "state_topic": f"{T}/pump/rpm",
+        "unit_of_measurement": "RPM",
+        "state_class": "measurement",
+        "icon": "mdi:fan",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_pump_power", {
+        "name": "Pump Power",
+        "unique_id": "jarvis_pool_pump_power",
+        "state_topic": f"{T}/pump/power",
+        "unit_of_measurement": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+        "device": _DEVICE,
+    }),
+    # ---- Current sensors ----
     ("sensor", "jarvis_pool_current", {
         "name": "Pool Pump Current",
         "unique_id": "jarvis_pool_current",
@@ -91,6 +124,16 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "state_class": "measurement",
         "device": _DEVICE,
     }),
+    ("sensor", "jarvis_pool_cell_current", {
+        "name": "Salt Cell Current",
+        "unique_id": "jarvis_pool_cell_current",
+        "state_topic": f"{T}/sensors/cell_current",
+        "unit_of_measurement": "A",
+        "device_class": "current",
+        "state_class": "measurement",
+        "device": _DEVICE,
+    }),
+    # ---- Conductivity ----
     ("sensor", "jarvis_pool_conductivity", {
         "name": "Pool Conductivity",
         "unique_id": "jarvis_pool_conductivity",
@@ -100,13 +143,14 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "state_class": "measurement",
         "device": _DEVICE,
     }),
+    # ---- Binary sensors ----
     ("binary_sensor", "jarvis_pool_flow", {
         "name": "Pool Flow",
         "unique_id": "jarvis_pool_flow",
         "state_topic": f"{T}/sensors/flow",
         "payload_on": "ON",
         "payload_off": "OFF",
-        "device_class": "running",
+        "device_class": "opening",
         "device": _DEVICE,
     }),
     ("binary_sensor", "jarvis_pool_pump_running", {
@@ -116,6 +160,15 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "payload_on": "ON",
         "payload_off": "OFF",
         "device_class": "running",
+        "device": _DEVICE,
+    }),
+    ("binary_sensor", "jarvis_pool_cell_interlock", {
+        "name": "Cell Interlock",
+        "unique_id": "jarvis_pool_cell_interlock",
+        "state_topic": f"{T}/cell/interlock",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:lock-check",
         "device": _DEVICE,
     }),
 ]
@@ -170,10 +223,13 @@ class MQTTClient:
     # ------------------------------------------------------------------
 
     def _publish_discovery(self, client) -> None:
+        for component, uid in _TOMBSTONES:
+            client.publish(f"{D}/{component}/{uid}/config", "", qos=1, retain=True)
         for component, uid, payload in _DISCOVERY:
             topic = f"{D}/{component}/{uid}/config"
             client.publish(topic, json.dumps(payload), qos=1, retain=True)
-        logger.info("HA auto-discovery published (%d entities)", len(_DISCOVERY))
+        logger.info("HA auto-discovery published (%d entities, %d tombstones)",
+                    len(_DISCOVERY), len(_TOMBSTONES))
 
     # ------------------------------------------------------------------
     # Public API

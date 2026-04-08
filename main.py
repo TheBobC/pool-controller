@@ -92,7 +92,8 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
             set_cell_fn=cell.set_cell,
         )
         if _mqtt:
-            _mqtt.publish("cell/state", "ON" if cell_on else "OFF", retain=True)
+            _mqtt.publish("cell/state",     "ON" if cell_on else "OFF",              retain=True)
+            _mqtt.publish("cell/interlock", "ON" if safety.is_interlock_ok() else "OFF")
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=1.0)
         except asyncio.TimeoutError:
@@ -111,9 +112,9 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
 
         if _mqtt and _mqtt.is_connected():
             if water_t is not None:
-                _mqtt.publish("sensors/water_temp",   water_t)
+                _mqtt.publish("sensors/water_temp",   round(water_t * 9 / 5 + 32, 1))
             if air_t is not None:
-                _mqtt.publish("sensors/air_temp",     air_t)
+                _mqtt.publish("sensors/air_temp",     round(air_t * 9 / 5 + 32, 1))
             if current is not None:
                 _mqtt.publish("sensors/current",      current)
             if ec is not None:
