@@ -47,8 +47,8 @@ _DEVICE = {
 # Stale retained discovery entries to delete from the broker on connect.
 # Publish empty payload to remove them from HA.
 _TOMBSTONES: list[tuple[str, str]] = [
-    ("sensor", "jarvis_pool_spa_temp"),         # renamed → Pool Air Temperature
-    ("number", "jarvis_pool_pump_rpm_set"),      # removed — RPM is read-only telemetry
+    ("sensor", "jarvis_pool_controller_spa_temperature"),  # renamed → Pool Air Temperature
+    ("number", "jarvis_pool_controller_pump_set_rpm"),     # removed — RPM is read-only telemetry
 ]
 
 # (component, unique_id, discovery_payload)
