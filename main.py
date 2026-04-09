@@ -72,9 +72,20 @@ def handle_cell_set(on: bool) -> None:
 # ---------------------------------------------------------------------------
 
 async def pump_keepalive_loop(shutdown: asyncio.Event) -> None:
-    """Send EcoStar RS-485 keep-alive every 500 ms.  Must not miss ticks."""
+    """Send EcoStar RS-485 keep-alive every 500 ms and publish pump telemetry.
+
+    send_keepalive() blocks for up to 100 ms waiting for the pump response, so
+    it runs in a thread-pool executor to keep the asyncio event loop responsive.
+    """
+    loop = asyncio.get_running_loop()
     while not shutdown.is_set():
-        pump.send_keepalive()
+        await loop.run_in_executor(None, pump.send_keepalive)
+        if _mqtt and _mqtt.is_connected():
+            telemetry = pump.get_telemetry()
+            if telemetry.get("rpm") is not None:
+                _mqtt.publish("pump/rpm",   telemetry["rpm"])
+            if telemetry.get("watts") is not None:
+                _mqtt.publish("pump/power", telemetry["watts"])
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=config.PUMP_KEEPALIVE_S)
         except asyncio.TimeoutError:
