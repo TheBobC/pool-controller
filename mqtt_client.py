@@ -53,8 +53,10 @@ _DEVICE = {
 # Stale retained discovery entries to delete from the broker on connect.
 # Publish empty payload to remove them from HA.
 _TOMBSTONES: list[tuple[str, str]] = [
-    ("sensor", "jarvis_pool_controller_spa_temperature"),  # renamed → Pool Air Temperature
-    ("number", "jarvis_pool_controller_pump_set_rpm"),     # removed — RPM is read-only telemetry
+    ("sensor", "jarvis_pool_controller_spa_temperature"),    # renamed → Pool Air Temperature
+    ("number", "jarvis_pool_controller_pump_set_rpm"),       # removed — RPM is read-only telemetry
+    ("sensor",        "jarvis_pool_controller_pump_power"),  # old prefix → jarvis_pool_pump_power
+    ("binary_sensor", "jarvis_pool_controller_cell_interlock"),  # old prefix → jarvis_pool_cell_interlock
 ]
 
 # (component, unique_id, discovery_payload)
@@ -151,7 +153,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     }),
     # ---- System health ----
     ("binary_sensor", "jarvis_pool_controller_online", {
-        "name": "Jarvis Pool Controller Online",
+        "name": "Pool Controller Online",
         "unique_id": "jarvis_pool_controller_online",
         "state_topic": f"{T}/system/status",
         "payload_on": "online",
@@ -294,7 +296,9 @@ class MQTTClient:
 
     def _publish_discovery(self, client) -> None:
         for component, uid in _TOMBSTONES:
-            client.publish(f"{D}/{component}/{uid}/config", "", qos=1, retain=True)
+            topic = f"{D}/{component}/{uid}/config"
+            logger.info("Tombstoning: %s", topic)
+            client.publish(topic, "", qos=1, retain=True)
         for component, uid, payload in _DISCOVERY:
             topic = f"{D}/{component}/{uid}/config"
             client.publish(topic, json.dumps(payload), qos=1, retain=True)
