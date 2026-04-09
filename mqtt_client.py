@@ -6,7 +6,13 @@ Inbound messages are forwarded to the asyncio event loop via
 asyncio.call_soon_threadsafe() into an asyncio.Queue.
 
 MQTT topics  (prefix = jarvis/pool/TudorPool):
-  jarvis/pool/TudorPool/status                  LWT  "online" / "offline"
+  jarvis/pool/TudorPool/system/status           LWT  "online" / "offline"
+  jarvis/pool/TudorPool/system/cpu_percent      published  float %
+  jarvis/pool/TudorPool/system/cpu_temp         published  float °F
+  jarvis/pool/TudorPool/system/memory_percent   published  float %
+  jarvis/pool/TudorPool/system/disk_percent     published  float %
+  jarvis/pool/TudorPool/system/wifi_signal      published  integer dBm
+  jarvis/pool/TudorPool/system/uptime_seconds   published  integer s
   jarvis/pool/TudorPool/pump/speed              published  0–100
   jarvis/pool/TudorPool/pump/speed/set          subscribed 0–100
   jarvis/pool/TudorPool/pump/running            published  "ON" / "OFF"
@@ -143,6 +149,70 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "state_class": "measurement",
         "device": _DEVICE,
     }),
+    # ---- System health ----
+    ("binary_sensor", "jarvis_pool_controller_online", {
+        "name": "Jarvis Pool Controller Online",
+        "unique_id": "jarvis_pool_controller_online",
+        "state_topic": f"{T}/system/status",
+        "payload_on": "online",
+        "payload_off": "offline",
+        "device_class": "connectivity",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_system_cpu_percent", {
+        "name": "Pool Controller CPU",
+        "unique_id": "jarvis_pool_system_cpu_percent",
+        "state_topic": f"{T}/system/cpu_percent",
+        "unit_of_measurement": "%",
+        "state_class": "measurement",
+        "icon": "mdi:cpu-64-bit",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_system_cpu_temp", {
+        "name": "Pool Controller CPU Temperature",
+        "unique_id": "jarvis_pool_system_cpu_temp",
+        "state_topic": f"{T}/system/cpu_temp",
+        "unit_of_measurement": "°F",
+        "device_class": "temperature",
+        "state_class": "measurement",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_system_memory_percent", {
+        "name": "Pool Controller Memory",
+        "unique_id": "jarvis_pool_system_memory_percent",
+        "state_topic": f"{T}/system/memory_percent",
+        "unit_of_measurement": "%",
+        "state_class": "measurement",
+        "icon": "mdi:memory",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_system_disk_percent", {
+        "name": "Pool Controller Disk",
+        "unique_id": "jarvis_pool_system_disk_percent",
+        "state_topic": f"{T}/system/disk_percent",
+        "unit_of_measurement": "%",
+        "state_class": "measurement",
+        "icon": "mdi:harddisk",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_system_wifi_signal", {
+        "name": "Pool Controller WiFi Signal",
+        "unique_id": "jarvis_pool_system_wifi_signal",
+        "state_topic": f"{T}/system/wifi_signal",
+        "unit_of_measurement": "dBm",
+        "device_class": "signal_strength",
+        "state_class": "measurement",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_system_uptime_seconds", {
+        "name": "Pool Controller Uptime",
+        "unique_id": "jarvis_pool_system_uptime_seconds",
+        "state_topic": f"{T}/system/uptime_seconds",
+        "unit_of_measurement": "s",
+        "device_class": "duration",
+        "state_class": "total_increasing",
+        "device": _DEVICE,
+    }),
     # ---- Binary sensors ----
     ("binary_sensor", "jarvis_pool_flow", {
         "name": "Pool Flow",
@@ -187,7 +257,7 @@ class MQTTClient:
             mqtt.CallbackAPIVersion.VERSION2,
             client_id="jarvis-pool",
         )
-        self._client.will_set(f"{T}/status", "offline", qos=1, retain=True)
+        self._client.will_set(f"{T}/system/status", "offline", qos=1, retain=True)
         if config.MQTT_USER:
             self._client.username_pw_set(config.MQTT_USER, config.MQTT_PASSWORD)
 
@@ -207,7 +277,7 @@ class MQTTClient:
         logger.info("MQTT connected → %s:%d", config.MQTT_HOST, config.MQTT_PORT)
         client.subscribe(f"{T}/pump/speed/set")
         client.subscribe(f"{T}/cell/set")
-        client.publish(f"{T}/status", "online", qos=1, retain=True)
+        client.publish(f"{T}/system/status", "online", qos=1, retain=True)
         self._publish_discovery(client)
 
     def _cb_disconnect(self, client, userdata, flags, reason_code, properties):
@@ -241,7 +311,7 @@ class MQTTClient:
 
     def disconnect(self) -> None:
         try:
-            self._client.publish(f"{T}/status", "offline", qos=1, retain=True)
+            self._client.publish(f"{T}/system/status", "offline", qos=1, retain=True)
         except Exception:
             pass
         self._client.loop_stop()

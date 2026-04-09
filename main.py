@@ -21,6 +21,10 @@ service keeps running and MQTT stays connected.
 import asyncio
 import logging
 import signal
+import subprocess
+import time
+
+import psutil
 
 import config  # noqa: F401 — loads .env before any other import
 import cell
@@ -65,6 +69,46 @@ def handle_cell_set(on: bool) -> None:
     logger.info("← cell/set: %s", "ON" if on else "OFF")
     _cell_requested = on
     state.save({"cell_on": on})
+
+
+# ---------------------------------------------------------------------------
+# System health helpers
+# ---------------------------------------------------------------------------
+
+def _read_cpu_temp() -> float | None:
+    """Read SoC temperature from the thermal zone; return °F or None."""
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as fh:
+            millideg = int(fh.read().strip())
+        return round(millideg / 1000.0 * 9 / 5 + 32, 1)
+    except Exception:
+        return None
+
+
+def _read_wifi_rssi() -> int | None:
+    """Return wlan0 RSSI in dBm via iwconfig, or None if unavailable."""
+    try:
+        out = subprocess.check_output(
+            ["iwconfig", "wlan0"], stderr=subprocess.DEVNULL, timeout=2
+        ).decode()
+        for token in out.split():
+            if token.startswith("level="):
+                return int(token.split("=", 1)[1])
+    except Exception:
+        pass
+    return None
+
+
+def _collect_system_health() -> dict:
+    """Gather all system health metrics.  Blocking — run in executor."""
+    return {
+        "cpu_percent":    round(psutil.cpu_percent(interval=1), 1),
+        "memory_percent": round(psutil.virtual_memory().percent, 1),
+        "disk_percent":   round(psutil.disk_usage("/").percent, 1),
+        "uptime_seconds": int(time.time() - psutil.boot_time()),
+        "cpu_temp":       _read_cpu_temp(),
+        "wifi_signal":    _read_wifi_rssi(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +195,30 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             pass
 
 
+async def system_health_loop(shutdown: asyncio.Event) -> None:
+    """Collect and publish system health metrics every 30 s.
+
+    _collect_system_health() blocks for ~1 s (psutil cpu_percent interval),
+    so it runs in a thread-pool executor to keep the event loop responsive.
+    """
+    loop = asyncio.get_running_loop()
+    while not shutdown.is_set():
+        health = await loop.run_in_executor(None, _collect_system_health)
+        if _mqtt and _mqtt.is_connected():
+            _mqtt.publish("system/cpu_percent",    health["cpu_percent"])
+            _mqtt.publish("system/memory_percent", health["memory_percent"])
+            _mqtt.publish("system/disk_percent",   health["disk_percent"])
+            _mqtt.publish("system/uptime_seconds", health["uptime_seconds"])
+            if health["cpu_temp"] is not None:
+                _mqtt.publish("system/cpu_temp",   health["cpu_temp"])
+            if health["wifi_signal"] is not None:
+                _mqtt.publish("system/wifi_signal", health["wifi_signal"])
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -190,11 +258,12 @@ async def main() -> None:
 
     # --- Run all tasks concurrently ---
     tasks = [
-        asyncio.create_task(pump_keepalive_loop(shutdown),  name="pump-keepalive"),
-        asyncio.create_task(safety_check_loop(shutdown),    name="safety"),
-        asyncio.create_task(sensor_read_loop(shutdown),     name="sensors"),
-        asyncio.create_task(state_publish_loop(shutdown),   name="state-pub"),
-        asyncio.create_task(_mqtt.message_loop(),            name="mqtt-rx"),
+        asyncio.create_task(pump_keepalive_loop(shutdown),   name="pump-keepalive"),
+        asyncio.create_task(safety_check_loop(shutdown),     name="safety"),
+        asyncio.create_task(sensor_read_loop(shutdown),      name="sensors"),
+        asyncio.create_task(state_publish_loop(shutdown),    name="state-pub"),
+        asyncio.create_task(system_health_loop(shutdown),    name="system-health"),
+        asyncio.create_task(_mqtt.message_loop(),             name="mqtt-rx"),
     ]
 
     await shutdown.wait()
