@@ -1,25 +1,30 @@
 """
 cell.py — Salt cell control via GeeekPi 4-channel relay HAT (I2C 0x10).
 
-Relay map (1-based channels → bit index on the HAT status byte):
+Relay map (1-based channel = register number on the HAT):
   CH1  Gate      — cell mains power. Must be de-energised during any polarity
                     change; never switch polarity with the gate hot.
-  CH2  Polarity A
-  CH3  Polarity B
-  CH4  Fans      — owned by fans.py (shares the I2C bus via read-modify-write)
+  CH2  Polarity  — single channel drives both A+B coils (tied in parallel);
+                    toggling CH2 flips the cell's applied polarity.
+  CH3  Fans      — owned by fans.py.
+  CH4  unused.
+
+INVERTED HAT logic (confirmed on the bench):
+  write 0x00 to register N → channel N ENERGISED (relay ON / contact active)
+  write 0xFF to register N → channel N DE-ENERGISED (relay OFF)
 
 Polarity convention:
-  forward  = A energised, B de-energised
-  reverse  = A de-energised, B energised
+  forward = CH2 de-energised (0xFF)
+  reverse = CH2 energised    (0x00)
 
-Cell-power switching sequence (set_cell):
-  on   : set polarity relays to current polarity → energise gate
-  off  : de-energise gate
+Cell-power switching (set_cell):
+  on   : energise gate (CH1 = 0x00)
+  off  : de-energise gate (CH1 = 0xFF)
 
-Polarity switching sequence (toggle_polarity / set_polarity):
+Polarity switching (toggle_polarity / set_polarity):
   1. de-energise gate (cell power off)
   2. wait POLARITY_SWITCH_DELAY_S
-  3. flip A and B
+  3. flip CH2 to the target polarity
   4. wait POLARITY_SWITCH_DELAY_S
   5. re-energise gate only if cell was on before the switch
 
@@ -38,29 +43,41 @@ _hw_ok: bool = False
 _cell_on: bool = False
 _polarity: str = "forward"   # "forward" or "reverse"
 
-_BIT_GATE = 1 << (config.CELL_RELAY_CH_GATE - 1)
-_BIT_A    = 1 << (config.CELL_RELAY_CH_A - 1)
-_BIT_B    = 1 << (config.CELL_RELAY_CH_B - 1)
+RELAY_ON  = 0x00   # energised  (inverted HAT)
+RELAY_OFF = 0xFF   # de-energised
+
+_ALL_CHANNELS = (1, 2, 3, 4)
+
+_POLARITY_VAL = {
+    "forward": RELAY_OFF,
+    "reverse": RELAY_ON,
+}
+
+
+def _write_channel(ch: int, val: int) -> None:
+    _bus.write_byte_data(config.CELL_I2C_ADDR, ch, val & 0xFF)
 
 
 def init() -> bool:
-    """Open I2C bus, verify HAT is present, force a known-safe baseline:
-    gate OFF, polarity = forward.  Non-fatal."""
+    """Open I2C bus and FIRST drive all four channels to 0xFF (all
+    de-energised) before any other I2C traffic.  Non-fatal — returns False
+    if the HAT is absent."""
     global _bus, _hw_ok, _cell_on, _polarity
     try:
         import smbus2  # type: ignore
         b = smbus2.SMBus(1)
-        b.read_byte(config.CELL_I2C_ADDR)
+        # First I2C operations on the HAT: force every channel OFF.
+        # Also doubles as a presence probe — a missing HAT raises here.
+        for ch in _ALL_CHANNELS:
+            b.write_byte_data(config.CELL_I2C_ADDR, ch, RELAY_OFF)
         _bus = b
         _hw_ok = True
         _cell_on = False
         _polarity = "forward"
-        _apply_polarity_relays(_polarity, gate_on=False)
-        logger.info("Cell relay HAT at 0x%02X — gate=CH%d, A=CH%d, B=CH%d",
+        logger.info("Cell relay HAT at 0x%02X — gate=CH%d, polarity=CH%d (all OFF)",
                     config.CELL_I2C_ADDR,
                     config.CELL_RELAY_CH_GATE,
-                    config.CELL_RELAY_CH_A,
-                    config.CELL_RELAY_CH_B)
+                    config.CELL_RELAY_CH_POLARITY)
         return True
     except Exception as exc:
         logger.warning("Cell relay HAT unavailable (0x%02X): %s",
@@ -69,43 +86,22 @@ def init() -> bool:
         return False
 
 
-def _read() -> int:
-    return _bus.read_byte(config.CELL_I2C_ADDR)
-
-
-def _write(byte: int) -> None:
-    _bus.write_byte(config.CELL_I2C_ADDR, byte & 0xFF)
-
-
-def _apply_polarity_relays(polarity: str, gate_on: bool) -> None:
-    """Write A/B to match polarity and set gate bit. Leaves other bits (fans) alone."""
-    if not _hw_ok or _bus is None:
-        return
-    current = _read()
-    new = current & ~(_BIT_A | _BIT_B | _BIT_GATE)
-    if polarity == "forward":
-        new |= _BIT_A
-    else:
-        new |= _BIT_B
-    if gate_on:
-        new |= _BIT_GATE
-    if new != current:
-        _write(new)
-
-
 def _set_gate(on: bool) -> None:
     if not _hw_ok or _bus is None:
         return
-    current = _read()
-    new = (current | _BIT_GATE) if on else (current & ~_BIT_GATE)
-    if new != current:
-        _write(new)
+    _write_channel(config.CELL_RELAY_CH_GATE, RELAY_ON if on else RELAY_OFF)
+
+
+def _set_polarity_relay(polarity: str) -> None:
+    if not _hw_ok or _bus is None:
+        return
+    _write_channel(config.CELL_RELAY_CH_POLARITY, _POLARITY_VAL[polarity])
 
 
 def set_cell(on: bool) -> bool:
-    """Energise or de-energise the cell gate.  Polarity relays are left at
-    their current setting (they match _polarity).  Tracks intent even when
-    hardware is absent.  Returns True on successful hardware write."""
+    """Energise or de-energise the cell gate (CH1) only.  Polarity relay is
+    left as-is.  Tracks intent even when hardware is absent.  Returns True
+    on successful hardware write."""
     global _cell_on
     _cell_on = on
 
@@ -114,7 +110,7 @@ def set_cell(on: bool) -> bool:
         return False
 
     try:
-        _apply_polarity_relays(_polarity, gate_on=on)
+        _set_gate(on)
         logger.info("Cell gate (CH%d) → %s  [polarity=%s]",
                     config.CELL_RELAY_CH_GATE,
                     "ON" if on else "OFF", _polarity)
@@ -144,7 +140,8 @@ def is_hw_ok() -> bool:
 
 def set_polarity(polarity: str) -> str:
     """Switch to the requested polarity ('forward'|'reverse') using the
-    mandated sequence.  Returns the polarity in effect after the call."""
+    mandated gate-cut / CH2-toggle / gate-restore sequence.  Returns the
+    polarity in effect after the call."""
     global _polarity, _cell_on
     if polarity not in ("forward", "reverse"):
         logger.warning("Bad polarity: %r", polarity)
@@ -157,7 +154,7 @@ def set_polarity(polarity: str) -> str:
     # Phase 2 safety: pre-switch current must reach zero before polarity change;
     # post-switch current must return within 2 s; verify ADS1115 A2 afterwards.
 
-    # 1. de-energise gate
+    # 1. de-energise gate (CH1 OFF)
     _cell_on = False
     try:
         _set_gate(False)
@@ -168,13 +165,14 @@ def set_polarity(polarity: str) -> str:
     # 2. wait
     time.sleep(config.POLARITY_SWITCH_DELAY_S)
 
-    # 3. toggle A and B
+    # 3. flip CH2 to target polarity (drives A+B coils simultaneously)
     _polarity = polarity
     try:
-        _apply_polarity_relays(_polarity, gate_on=False)
+        _set_polarity_relay(_polarity)
     except Exception as exc:
-        logger.warning("Polarity switch: A/B flip failed: %s", exc)
-    logger.info("Polarity switch: A/B → %s", _polarity)
+        logger.warning("Polarity switch: CH2 flip failed: %s", exc)
+    logger.info("Polarity switch: CH%d → %s",
+                config.CELL_RELAY_CH_POLARITY, _polarity)
 
     # 4. wait
     time.sleep(config.POLARITY_SWITCH_DELAY_S)

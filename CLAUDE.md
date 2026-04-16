@@ -12,7 +12,7 @@ Part of the Jarvis home-automation ecosystem.
 | Waveshare 2-CH RS485 HAT | UART | `/dev/ttySC0` @ 19200 | Pump control bus |
 | Hayward EcoStar SP3400VSP | RS-485 (via HAT) | pump addr `0x01` | **Display MUST be disconnected** |
 | Atlas EZO-EC probe | UART | `/dev/serial0` @ 9600 | Conductivity in µS/cm |
-| GeeekPi 4-ch relay HAT | I2C | `0x10`, relay CH2+CH3 | Salt cell polarity relays (both together); CH1 reserved for lighting |
+| GeeekPi 4-ch relay HAT | I2C | `0x10`, per-channel regs | CH1 gate, CH2 polarity (A+B tied), CH3 fans, CH4 unused. Inverted logic: 0x00=ON, 0xFF=OFF |
 | ADS1115 ADC | I2C | `0x48` | AIN0=air temp, AIN1=water temp, AIN2=polarity verify, AIN3=current |
 | Thermistors (×2) | ADS1115 AIN0/1 | — | 10 kΩ NTC, B=3950, 10 kΩ divider to 3.3 V |
 | ACS712 30A | ADS1115 AIN2 | — | 66 mV/A, zero = 2.5 V |

@@ -1,8 +1,13 @@
 """
-fans.py — Enclosure fan control on GeeekPi 4-channel relay HAT (I2C 0x10 CH4).
+fans.py — Enclosure fan control on GeeekPi 4-channel relay HAT (I2C 0x10 CH3).
 
-Shares the relay HAT with cell.py via read-modify-write on the status byte;
-touches only the CH4 bit so the cell gate/polarity relays are left alone.
+Uses the HAT's per-channel register (register N = channel N) with the
+inverted logic confirmed on the bench: 0x00 = energised (fans ON),
+0xFF = de-energised (fans OFF).
+
+Shares the HAT with cell.py; writes only the fan channel register so the
+cell gate / polarity relays are untouched.  cell.init() is expected to run
+first and clear every channel to OFF as the very first I2C operation.
 """
 
 import logging
@@ -15,7 +20,8 @@ _bus = None
 _hw_ok: bool = False
 _fans_on: bool = False
 
-_BIT_FAN = 1 << (config.FAN_RELAY_CH - 1)
+RELAY_ON  = 0x00   # energised  (inverted HAT)
+RELAY_OFF = 0xFF   # de-energised
 
 
 def init() -> bool:
@@ -23,11 +29,12 @@ def init() -> bool:
     try:
         import smbus2  # type: ignore
         b = smbus2.SMBus(1)
-        b.read_byte(config.CELL_I2C_ADDR)
+        # Redundant-but-safe: force fan channel OFF on entry.
+        b.write_byte_data(config.CELL_I2C_ADDR, config.FAN_RELAY_CH, RELAY_OFF)
         _bus = b
         _hw_ok = True
-        set_fans(False)
-        logger.info("Fan relay on HAT 0x%02X CH%d",
+        _fans_on = False
+        logger.info("Fan relay on HAT 0x%02X CH%d (OFF)",
                     config.CELL_I2C_ADDR, config.FAN_RELAY_CH)
         return True
     except Exception as exc:
@@ -38,14 +45,17 @@ def init() -> bool:
 
 def set_fans(on: bool) -> bool:
     global _fans_on
+    changed = (_fans_on != on)
     _fans_on = on
     if not _hw_ok or _bus is None:
         return False
     try:
-        current = _bus.read_byte(config.CELL_I2C_ADDR)
-        new = (current | _BIT_FAN) if on else (current & ~_BIT_FAN)
-        if new != current:
-            _bus.write_byte(config.CELL_I2C_ADDR, new & 0xFF)
+        _bus.write_byte_data(
+            config.CELL_I2C_ADDR,
+            config.FAN_RELAY_CH,
+            RELAY_ON if on else RELAY_OFF,
+        )
+        if changed:
             logger.info("Fans (CH%d) → %s", config.FAN_RELAY_CH, "ON" if on else "OFF")
         return True
     except Exception as exc:

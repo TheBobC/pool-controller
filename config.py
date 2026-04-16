@@ -26,16 +26,23 @@ PUMP_KEEPALIVE_S = 0.5  # Packet interval; pump reverts to panel if > ~2s gap
 
 # ---------------------------------------------------------------------------
 # Salt cell / enclosure fans — GeeekPi 4-channel relay HAT
-# CH1 = Gate — cell mains power (must be OFF during any polarity change)
-# CH2 = polarity relay A
-# CH3 = polarity relay B
-# CH4 = enclosure fans
+# CH1 = Gate      — cell mains power (must be OFF during any polarity change)
+# CH2 = Polarity  — drives A+B coils tied in parallel; one channel flips both
+# CH3 = Fans      — enclosure cooling
+# CH4 = unused
+#
+# HAT uses per-channel I2C registers (register N = channel N, 1-based) with
+# INVERTED logic, confirmed by bench testing:
+#   write 0x00 → channel ENERGISED (relay ON)
+#   write 0xFF → channel DE-ENERGISED (relay OFF)
+# This is opposite to the HAT's datasheet. Init writes 0xFF to all four
+# registers as the first I2C operation so no channel floats energised at
+# startup. Silkscreen NO/NC is also reversed on this HAT.
 # ---------------------------------------------------------------------------
-CELL_I2C_ADDR  = int(os.getenv("CELL_I2C_ADDR",   "0x10"), 16)
-CELL_RELAY_CH_GATE = int(os.getenv("CELL_RELAY_CH_GATE", "1"))  # 1-based, cell power gate
-CELL_RELAY_CH_A    = int(os.getenv("CELL_RELAY_CH_A",    "2"))  # 1-based, polarity relay A
-CELL_RELAY_CH_B    = int(os.getenv("CELL_RELAY_CH_B",    "3"))  # 1-based, polarity relay B
-FAN_RELAY_CH       = int(os.getenv("FAN_RELAY_CH",       "4"))  # 1-based, enclosure fans
+CELL_I2C_ADDR          = int(os.getenv("CELL_I2C_ADDR",          "0x10"), 16)
+CELL_RELAY_CH_GATE     = int(os.getenv("CELL_RELAY_CH_GATE",     "1"))  # 1-based
+CELL_RELAY_CH_POLARITY = int(os.getenv("CELL_RELAY_CH_POLARITY", "2"))  # 1-based
+FAN_RELAY_CH           = int(os.getenv("FAN_RELAY_CH",           "3"))  # 1-based
 
 # Polarity switching — MUST NOT run while gate is energised
 POLARITY_SWITCH_DELAY_S = float(os.getenv("POLARITY_SWITCH_DELAY_S", "3.0"))
