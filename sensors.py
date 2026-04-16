@@ -45,10 +45,10 @@ def _init_ads() -> bool:
         i2c = busio.I2C(board.SCL, board.SDA)
         _ads = ADS.ADS1115(i2c, address=config.ADS_I2C_ADDR)
         _ads_channels = [
-            AnalogIn(_ads, ADS.P0),
-            AnalogIn(_ads, ADS.P1),
-            AnalogIn(_ads, ADS.P2),
-            AnalogIn(_ads, ADS.P3),
+            AnalogIn(_ads, 0),
+            AnalogIn(_ads, 1),
+            AnalogIn(_ads, 2),
+            AnalogIn(_ads, 3),
         ]
         _ads_ok = True
         logger.info("ADS1115 ready at I2C 0x%02X", config.ADS_I2C_ADDR)
