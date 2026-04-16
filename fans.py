@@ -1,9 +1,8 @@
 """
 fans.py — Enclosure fan control on GeeekPi 4-channel relay HAT (I2C 0x10 CH3).
 
-Uses the HAT's per-channel register (register N = channel N) with the
-inverted logic confirmed on the bench: 0x00 = energised (fans ON),
-0xFF = de-energised (fans OFF).
+Uses the HAT's per-channel register (register N = channel N) per
+datasheet: 0xFF = energised (fans ON), 0x00 = de-energised (fans OFF).
 
 Shares the HAT with cell.py; writes only the fan channel register so the
 cell gate / polarity relays are untouched.  cell.init() is expected to run
@@ -20,8 +19,8 @@ _bus = None
 _hw_ok: bool = False
 _fans_on: bool = False
 
-RELAY_ON  = 0x00   # energised  (inverted HAT)
-RELAY_OFF = 0xFF   # de-energised
+RELAY_ON  = 0xFF   # energised
+RELAY_OFF = 0x00   # de-energised
 
 
 def init() -> bool:

@@ -9,17 +9,17 @@ Relay map (1-based channel = register number on the HAT):
   CH3  Fans      — owned by fans.py.
   CH4  unused.
 
-INVERTED HAT logic (confirmed on the bench):
-  write 0x00 to register N → channel N ENERGISED (relay ON / contact active)
-  write 0xFF to register N → channel N DE-ENERGISED (relay OFF)
+HAT logic (per datasheet, wiring matches silkscreen NO/NC):
+  write 0xFF to register N → channel N ENERGISED (relay ON / contact active)
+  write 0x00 to register N → channel N DE-ENERGISED (relay OFF)
 
 Polarity convention:
-  forward = CH2 de-energised (0xFF)
-  reverse = CH2 energised    (0x00)
+  forward = CH2 de-energised (0x00)
+  reverse = CH2 energised    (0xFF)
 
 Cell-power switching (set_cell):
-  on   : energise gate (CH1 = 0x00)
-  off  : de-energise gate (CH1 = 0xFF)
+  on   : energise gate (CH1 = 0xFF)
+  off  : de-energise gate (CH1 = 0x00)
 
 Polarity switching (toggle_polarity / set_polarity):
   1. de-energise gate (cell power off)
@@ -43,8 +43,8 @@ _hw_ok: bool = False
 _cell_on: bool = False
 _polarity: str = "forward"   # "forward" or "reverse"
 
-RELAY_ON  = 0x00   # energised  (inverted HAT)
-RELAY_OFF = 0xFF   # de-energised
+RELAY_ON  = 0xFF   # energised
+RELAY_OFF = 0x00   # de-energised
 
 _ALL_CHANNELS = (1, 2, 3, 4)
 
@@ -59,7 +59,7 @@ def _write_channel(ch: int, val: int) -> None:
 
 
 def init() -> bool:
-    """Open I2C bus and FIRST drive all four channels to 0xFF (all
+    """Open I2C bus and FIRST drive all four channels to RELAY_OFF (all
     de-energised) before any other I2C traffic.  Non-fatal — returns False
     if the HAT is absent."""
     global _bus, _hw_ok, _cell_on, _polarity
