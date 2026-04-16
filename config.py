@@ -25,13 +25,23 @@ CTRL_ADDR = 0x0C        # This controller's address on the bus
 PUMP_KEEPALIVE_S = 0.5  # Packet interval; pump reverts to panel if > ~2s gap
 
 # ---------------------------------------------------------------------------
-# Salt cell — GeeekPi 4-channel relay HAT
-# CH1 = reserved for future lighting (do not use)
-# CH2 + CH3 = polarity relays — both must be energised simultaneously
+# Salt cell / enclosure fans — GeeekPi 4-channel relay HAT
+# CH1 = Gate — cell mains power (must be OFF during any polarity change)
+# CH2 = polarity relay A
+# CH3 = polarity relay B
+# CH4 = enclosure fans
 # ---------------------------------------------------------------------------
 CELL_I2C_ADDR  = int(os.getenv("CELL_I2C_ADDR",   "0x10"), 16)
-CELL_RELAY_CH_A = int(os.getenv("CELL_RELAY_CH_A", "2"))   # 1-based, polarity relay A
-CELL_RELAY_CH_B = int(os.getenv("CELL_RELAY_CH_B", "3"))   # 1-based, polarity relay B
+CELL_RELAY_CH_GATE = int(os.getenv("CELL_RELAY_CH_GATE", "1"))  # 1-based, cell power gate
+CELL_RELAY_CH_A    = int(os.getenv("CELL_RELAY_CH_A",    "2"))  # 1-based, polarity relay A
+CELL_RELAY_CH_B    = int(os.getenv("CELL_RELAY_CH_B",    "3"))  # 1-based, polarity relay B
+FAN_RELAY_CH       = int(os.getenv("FAN_RELAY_CH",       "4"))  # 1-based, enclosure fans
+
+# Polarity switching — MUST NOT run while gate is energised
+POLARITY_SWITCH_DELAY_S = float(os.getenv("POLARITY_SWITCH_DELAY_S", "3.0"))
+
+# Enclosure fans — on if cell is active OR air temp exceeds threshold (°F)
+FAN_TEMP_THRESHOLD = float(os.getenv("FAN_TEMP_THRESHOLD", "90.0"))
 
 # ---------------------------------------------------------------------------
 # ADS1115 ADC

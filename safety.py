@@ -8,6 +8,15 @@ The cell is permitted only when ALL three conditions hold simultaneously:
 
 Any violation immediately de-energises the cell regardless of user intent.
 The 60-second timer resets whenever either condition is lost.
+
+Phase 2 (not yet implemented) — current/polarity fault layer:
+  - Overcurrent shutdown when cell current > 9 A
+  - Undercurrent fault when gate is on and current < 0.5 A
+  - Current-when-off fault when gate is off and current > 0.1 A
+  - Pre-switch current must reach 0 before a polarity change is allowed
+  - Post-switch current must return within 2 s of re-energising the gate
+  - ADS1115 A2 polarity-verify reading must match commanded polarity after each switch
+  - Any fault: immediate gate de-energise + MQTT alert + HA notification
 """
 
 import logging

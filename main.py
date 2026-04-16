@@ -28,6 +28,7 @@ import psutil
 
 import config  # noqa: F401 — loads .env before any other import
 import cell
+import fans
 import mqtt_client
 import pump
 import safety
@@ -46,6 +47,7 @@ logger = logging.getLogger("pool")
 # ---------------------------------------------------------------------------
 _cell_requested: bool = False
 _mqtt: mqtt_client.MQTTClient | None = None
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +71,22 @@ def handle_cell_set(on: bool) -> None:
     logger.info("← cell/set: %s", "ON" if on else "OFF")
     _cell_requested = on
     state.save({"cell_on": on})
+
+
+async def _do_polarity_toggle() -> None:
+    loop = asyncio.get_running_loop()
+    # Blocks ~2 * POLARITY_SWITCH_DELAY_S — run in executor
+    new_polarity = await loop.run_in_executor(None, cell.toggle_polarity)
+    if _mqtt:
+        _mqtt.publish("cell/polarity", new_polarity, retain=True)
+        _mqtt.publish("cell/state",
+                      "ON" if cell.get_cell_state() else "OFF", retain=True)
+
+
+def handle_polarity_toggle() -> None:
+    logger.info("← cell/cmd/polarity: toggle")
+    if _main_loop is not None:
+        asyncio.run_coroutine_threadsafe(_do_polarity_toggle(), _main_loop)
 
 
 # ---------------------------------------------------------------------------
@@ -165,16 +183,25 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
         ec       = await loop.run_in_executor(None, sensors.read_conductivity)
         flow     = sensors.read_flow()
 
+        air_t_f = round(air_t * 9 / 5 + 32, 1) if air_t is not None else None
+
+        # Fan logic: on if cell is active OR enclosure air exceeds threshold
+        fan_on = cell.get_cell_state() or (
+            air_t_f is not None and air_t_f > config.FAN_TEMP_THRESHOLD
+        )
+        fans.set_fans(fan_on)
+
         if _mqtt and _mqtt.is_connected():
             if water_t is not None:
                 _mqtt.publish("sensors/water_temp",   round(water_t * 9 / 5 + 32, 1))
-            if air_t is not None:
-                _mqtt.publish("sensors/air_temp",     round(air_t * 9 / 5 + 32, 1))
+            if air_t_f is not None:
+                _mqtt.publish("sensors/air_temp",     air_t_f)
             if current is not None:
                 _mqtt.publish("sensors/current",      current)
             if ec is not None:
                 _mqtt.publish("sensors/conductivity", ec)
             _mqtt.publish("sensors/flow", "ON" if flow else "OFF")
+            _mqtt.publish("fans/state",  "ON" if fan_on else "OFF", retain=True)
 
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=30.0)
@@ -189,6 +216,7 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             spd = pump.get_speed()
             _mqtt.publish("pump/speed",   spd,                         retain=True)
             _mqtt.publish("pump/running", "ON" if spd > 0 else "OFF",  retain=True)
+            _mqtt.publish("cell/polarity", cell.get_polarity(),         retain=True)
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=60.0)
         except asyncio.TimeoutError:
@@ -234,13 +262,17 @@ async def main() -> None:
     # --- Hardware init (all non-fatal) ---
     pump.init()
     cell.init()
+    fans.init()
     sensors.init()
 
     # --- MQTT ---
+    global _main_loop
     loop = asyncio.get_running_loop()
+    _main_loop = loop
     _mqtt = mqtt_client.MQTTClient(loop)
     _mqtt.register_speed_handler(handle_speed_set)
     _mqtt.register_cell_handler(handle_cell_set)
+    _mqtt.register_polarity_toggle_handler(handle_polarity_toggle)
     _mqtt.connect()
 
     # --- Shutdown signal ---
@@ -275,6 +307,7 @@ async def main() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
     pump.close()
+    fans.close()
     cell.close()
     sensors.cleanup()
     _mqtt.disconnect()

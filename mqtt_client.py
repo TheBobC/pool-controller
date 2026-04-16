@@ -21,6 +21,9 @@ MQTT topics  (prefix = jarvis/pool/TudorPool):
   jarvis/pool/TudorPool/cell/state              published  "ON" / "OFF"
   jarvis/pool/TudorPool/cell/set                subscribed "ON" / "OFF"
   jarvis/pool/TudorPool/cell/interlock          published  "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/polarity           published  "forward" / "reverse"
+  jarvis/pool/TudorPool/cell/cmd/polarity       subscribed "toggle"
+  jarvis/pool/TudorPool/fans/state              published  "ON" / "OFF"
   jarvis/pool/TudorPool/sensors/water_temp      published  °F
   jarvis/pool/TudorPool/sensors/air_temp        published  °F
   jarvis/pool/TudorPool/sensors/current         published  A  (pump circuit, ACS712)
@@ -234,6 +237,31 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "device_class": "running",
         "device": _DEVICE,
     }),
+    ("binary_sensor", "jarvis_pool_fans", {
+        "name": "Pool Enclosure Fans",
+        "unique_id": "jarvis_pool_fans",
+        "state_topic": f"{T}/fans/state",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "device_class": "running",
+        "icon": "mdi:fan",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_cell_polarity", {
+        "name": "Salt Cell Polarity",
+        "unique_id": "jarvis_pool_cell_polarity",
+        "state_topic": f"{T}/cell/polarity",
+        "icon": "mdi:swap-horizontal",
+        "device": _DEVICE,
+    }),
+    ("button", "jarvis_pool_cell_polarity_toggle", {
+        "name": "Salt Cell Polarity Toggle",
+        "unique_id": "jarvis_pool_cell_polarity_toggle",
+        "command_topic": f"{T}/cell/cmd/polarity",
+        "payload_press": "toggle",
+        "icon": "mdi:swap-horizontal-bold",
+        "device": _DEVICE,
+    }),
     ("binary_sensor", "jarvis_pool_cell_interlock", {
         "name": "Cell Interlock",
         "unique_id": "jarvis_pool_cell_interlock",
@@ -254,6 +282,7 @@ class MQTTClient:
 
         self._on_speed_set: Optional[Callable[[int], None]] = None
         self._on_cell_set: Optional[Callable[[bool], None]] = None
+        self._on_polarity_toggle: Optional[Callable[[], None]] = None
 
         self._client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
@@ -279,6 +308,7 @@ class MQTTClient:
         logger.info("MQTT connected → %s:%d", config.MQTT_HOST, config.MQTT_PORT)
         client.subscribe(f"{T}/pump/speed/set")
         client.subscribe(f"{T}/cell/set")
+        client.subscribe(f"{T}/cell/cmd/polarity")
         client.publish(f"{T}/system/status", "online", qos=1, retain=True)
         self._publish_discovery(client)
 
@@ -338,6 +368,9 @@ class MQTTClient:
     def register_cell_handler(self, fn: Callable[[bool], None]) -> None:
         self._on_cell_set = fn
 
+    def register_polarity_toggle_handler(self, fn: Callable[[], None]) -> None:
+        self._on_polarity_toggle = fn
+
     async def message_loop(self) -> None:
         """Dispatch inbound commands.  Run as an asyncio task."""
         try:
@@ -358,5 +391,9 @@ class MQTTClient:
                 elif topic == f"{T}/cell/set":
                     if self._on_cell_set:
                         self._on_cell_set(payload.upper() == "ON")
+
+                elif topic == f"{T}/cell/cmd/polarity":
+                    if self._on_polarity_toggle:
+                        self._on_polarity_toggle()
         except asyncio.CancelledError:
             pass
