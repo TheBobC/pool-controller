@@ -16,9 +16,9 @@ TOPIC_PREFIX = os.getenv("MQTT_TOPIC_PREFIX", "jarvis/pool/TudorPool")
 HA_DISCOVERY_PREFIX = os.getenv("HA_DISCOVERY_PREFIX", "homeassistant")
 
 # ---------------------------------------------------------------------------
-# Pump — Hayward EcoStar SP3400VSP via Waveshare 2-CH RS485 HAT
+# Pump — Hayward EcoStar SP3400VSP via USB RS485 adapter
 # ---------------------------------------------------------------------------
-PUMP_PORT = os.getenv("PUMP_PORT", "/dev/ttySC0")
+PUMP_PORT = os.getenv("PUMP_PORT", "/dev/ttyUSB0")
 PUMP_BAUD = int(os.getenv("PUMP_BAUD", "19200"))
 PUMP_ADDR = 0x01        # EcoStar pump node address
 CTRL_ADDR = 0x0C        # This controller's address on the bus
