@@ -22,24 +22,24 @@ import asyncio
 import logging
 import signal
 import subprocess
+import sys
 import time
 
 import psutil
 
 import config  # noqa: F401 — loads .env before any other import
-import cell
-import fans
-import mqtt_client
-import pump
-import safety
-import sensors
-import state
+import log_setup
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+log_setup.setup()
+
+import cell  # noqa: E402
+import fans  # noqa: E402
+import mqtt_client  # noqa: E402
+import pump  # noqa: E402
+import safety  # noqa: E402
+import sensors  # noqa: E402
+import state  # noqa: E402
+
 logger = logging.getLogger("pool")
 
 # ---------------------------------------------------------------------------
@@ -191,6 +191,16 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
         )
         fans.set_fans(fan_on)
 
+        logger.info(
+            "sensors: water=%s air=%s flow=%s current=%s ec=%s fans=%s",
+            f"{round(water_t * 9/5 + 32, 1)}°F" if water_t is not None else "n/a",
+            f"{air_t_f}°F"                        if air_t_f is not None else "n/a",
+            "ON" if flow else "OFF",
+            f"{current:.3f}A"                     if current is not None else "n/a",
+            f"{ec:.0f}µS/cm"                      if ec is not None else "n/a",
+            "ON" if fan_on else "OFF",
+        )
+
         if _mqtt and _mqtt.is_connected():
             if water_t is not None:
                 _mqtt.publish("sensors/water_temp",   round(water_t * 9 / 5 + 32, 1))
@@ -315,4 +325,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "st":
+        import selftest
+        selftest.run()
+    else:
+        asyncio.run(main())
