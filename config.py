@@ -65,7 +65,7 @@ ADS_VCC = float(os.getenv("ADS_VCC", "3.3"))
 THERM_B     = 3950.0    # B coefficient
 THERM_R0    = 10_000.0  # Resistance at T0 (Ω)
 THERM_T0    = 25.0      # Reference temperature (°C)
-THERM_R_REF = 10_000.0  # Series reference resistor (Ω)
+THERM_R_REF = 100_000.0  # Series reference resistor (Ω)
 
 # ACS712 30A current sensor
 ACS_SENSITIVITY = 0.066  # V/A  (66 mV/A for 30 A model)

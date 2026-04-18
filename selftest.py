@@ -23,12 +23,12 @@ _SKIP = "SKIP"
 
 
 def _row(component: str, status: str, notes: str) -> str:
-    return f"{component:<{_CW[0]}} | {status:<{_CW[1]}} | {notes}"
+    return f"  {component:<{_CW[0]}} | {status:<{_CW[1]}} | {notes}"
 
 
 def _header() -> None:
     print(_row("COMPONENT", "STATUS", "NOTES"))
-    print(f"{'-' * _CW[0]}-+-{'-' * _CW[1]}-+-{'-' * 35}")
+    print(f"  {'-' * _CW[0]}-+-{'-' * _CW[1]}-+-{'-' * 35}")
 
 
 def _pr(component: str, passed, notes: str) -> None:
@@ -57,7 +57,7 @@ def _c_to_f(c: float) -> float:
 
 def run() -> None:
     print()
-    print("  Jarvis Pool Controller — System Self-Test")
+    print("● Here are the real results:")
     print()
     _header()
 
@@ -161,9 +161,11 @@ def run() -> None:
         import serial
         ser = serial.Serial(config.EC_PORT, baudrate=config.EC_BAUD, timeout=2.0)
         ser.reset_input_buffer()
+        ser.reset_output_buffer()
         ser.write(b"I\r")
+        ser.flush()
         time.sleep(0.4)
-        line = ser.readline().decode("ascii", errors="replace").strip()
+        line = ser.read_until(b"\r").decode("ascii", errors="replace").strip()
         ser.close()
         if "EC" in line.upper():
             parts   = line.split(",")
