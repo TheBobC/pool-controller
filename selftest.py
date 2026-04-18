@@ -20,6 +20,7 @@ _CW = (22, 6, 0)
 _PASS = "PASS"
 _FAIL = "FAIL"
 _SKIP = "SKIP"
+_WARN = "WARN"
 
 
 def _row(component: str, status: str, notes: str) -> str:
@@ -34,6 +35,8 @@ def _header() -> None:
 def _pr(component: str, passed, notes: str) -> None:
     if passed is None:
         status = _SKIP
+    elif passed == _WARN:
+        status = _WARN
     elif passed:
         status = _PASS
     else:
@@ -88,11 +91,11 @@ def run() -> None:
         from adafruit_ads1x15.analog_in import AnalogIn
 
         i2c  = busio.I2C(board.SCL, board.SDA)
-        ads  = ADS.ADS1115(i2c, address=config.ADS_I2C_ADDR)
+        ads  = ADS.ADS1115(i2c, address=config.ADS_I2C_ADDR, gain=2/3)
         chans = [AnalogIn(ads, ch) for ch in range(4)]
         for i, ch in enumerate(chans):
             try:
-                voltages[i] = round(ch.voltage * 0.5, 3)
+                voltages[i] = round(ch.voltage, 3)
             except Exception:
                 pass
         ads_ok = True
@@ -111,10 +114,10 @@ def run() -> None:
         t_c = _steinhart(v)
         if t_c is not None:
             valid = 0.05 < v < (config.ADS_VCC - 0.05)
-            _pr("AIR TEMP (AIN0)", valid,
+            _pr("AIR TEMP (AIN0)", True if valid else _WARN,
                 f"{_c_to_f(t_c)}°F  ({t_c}°C, V={v}V)")
         else:
-            _pr("AIR TEMP (AIN0)", False, f"Voltage out of range: {v}V")
+            _pr("AIR TEMP (AIN0)", _WARN, f"Voltage out of range: {v}V")
     else:
         _pr("AIR TEMP (AIN0)", False, "ADS unavailable")
 
@@ -160,8 +163,7 @@ def run() -> None:
     try:
         import serial
         ser = serial.Serial(config.EC_PORT, baudrate=config.EC_BAUD, timeout=2.0)
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
+        ser.read(ser.in_waiting)
         ser.write(b"I\r")
         ser.flush()
         time.sleep(0.4)

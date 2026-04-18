@@ -43,16 +43,15 @@ def _init_ads() -> bool:
         from adafruit_ads1x15.analog_in import AnalogIn  # type: ignore
 
         i2c = busio.I2C(board.SCL, board.SDA)
-        _ads = ADS.ADS1115(i2c, address=config.ADS_I2C_ADDR, gain=1)
+        _ads = ADS.ADS1115(i2c, address=config.ADS_I2C_ADDR, gain=2/3)
         _ads_channels = [
             AnalogIn(_ads, 0),
             AnalogIn(_ads, 1),
             AnalogIn(_ads, 2),
             AnalogIn(_ads, 3),
         ]
-        _ads.gain = 1  # set after channel creation; ±4.096 V full scale
         _ads_ok = True
-        logger.info("ADS1115 ready at I2C 0x%02X gain=%s", config.ADS_I2C_ADDR, _ads.gain)
+        logger.info("ADS1115 ready at I2C 0x%02X gain=%.4f (±6.144V)", config.ADS_I2C_ADDR, _ads.gain)
         return True
     except Exception as exc:
         logger.warning("ADS1115 unavailable: %s", exc)
@@ -85,12 +84,12 @@ def _steinhart_hart(v: float) -> Optional[float]:
 
 def read_water_temp() -> Optional[float]:
     v = _ads_voltage(config.ADS_CH_WATER_TEMP)
-    return _steinhart_hart(v * 0.5) if v is not None else None
+    return _steinhart_hart(v) if v is not None else None
 
 
 def read_air_temp() -> Optional[float]:
     v = _ads_voltage(config.ADS_CH_AIR_TEMP)
-    return _steinhart_hart(v * 0.5) if v is not None else None
+    return _steinhart_hart(v) if v is not None else None
 
 
 def read_current() -> Optional[float]:
@@ -98,7 +97,7 @@ def read_current() -> Optional[float]:
     v = _ads_voltage(config.ADS_CH_CURRENT)
     if v is None:
         return None
-    return round((v * 0.5 - config.ACS_ZERO_V) / config.ACS_SENSITIVITY, 3)
+    return round((v - config.ACS_ZERO_V) / config.ACS_SENSITIVITY, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +129,7 @@ def read_conductivity() -> Optional[float]:
     if not _ec_ok or _ec_serial is None:
         return None
     try:
-        _ec_serial.reset_input_buffer()
+        _ec_serial.read(_ec_serial.in_waiting)
         _ec_serial.write(b"R\r")
         time.sleep(0.65)
         line = _ec_serial.readline().decode("ascii", errors="replace").strip()
