@@ -44,6 +44,7 @@ def _init_ads() -> bool:
 
         i2c = busio.I2C(board.SCL, board.SDA)
         _ads = ADS.ADS1115(i2c, address=config.ADS_I2C_ADDR)
+        _ads.gain = 1  # ±4.096 V — must match ADS_VCC; hardware default is gain=2 (±2.048 V)
         _ads_channels = [
             AnalogIn(_ads, 0),
             AnalogIn(_ads, 1),
