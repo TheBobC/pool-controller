@@ -106,12 +106,12 @@ HA auto-discovery prefix: `homeassistant/`
 
 ## Thermistor Calculation
 
-Voltage divider: `VCC(3.3V) → 10kΩ → AINx → NTC → GND`
+Voltage divider: `VCC(5V) → 10kΩ → AINx → NTC → GND`
 
 ```python
 R = R_REF * V / (VCC - V)
 T = 1 / (1/T0_K + (1/B) * ln(R/R0)) - 273.15
-# T0_K = 298.15 K (25°C), B = 3950, R0 = 10000 Ω
+# T0_K = 298.15 K (25°C), B = 3950, R0 = 10000 Ω, VCC = 5 V
 ```
 
 ---

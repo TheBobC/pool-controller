@@ -58,7 +58,7 @@ ADS_CH_AIR_TEMP    = 0   # AIN0 — air temp thermistor
 ADS_CH_WATER_TEMP  = 1   # AIN1 — water temp thermistor
 ADS_CH_POLARITY    = 2   # AIN2 — salt cell polarity verify (voltage divider)
 ADS_CH_CURRENT     = 3   # AIN3 — ACS712 30A current sensor
-ADS_VCC = float(os.getenv("ADS_VCC", "3.3"))
+ADS_VCC = float(os.getenv("ADS_VCC", "5.0"))
 
 # Thermistor — Steinhart-Hart B-parameter
 # Divider: VCC → R_REF → (AIN) → Thermistor → GND
