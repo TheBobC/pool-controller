@@ -92,7 +92,7 @@ def run() -> None:
         chans = [AnalogIn(ads, ch) for ch in range(4)]
         for i, ch in enumerate(chans):
             try:
-                voltages[i] = round(ch.voltage, 3)
+                voltages[i] = round(ch.voltage * 0.5, 3)
             except Exception:
                 pass
         ads_ok = True

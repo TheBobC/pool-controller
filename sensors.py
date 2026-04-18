@@ -98,7 +98,7 @@ def read_current() -> Optional[float]:
     v = _ads_voltage(config.ADS_CH_CURRENT)
     if v is None:
         return None
-    return round((v - config.ACS_ZERO_V) / config.ACS_SENSITIVITY, 3)
+    return round((v * 0.5 - config.ACS_ZERO_V) / config.ACS_SENSITIVITY, 3)
 
 
 # ---------------------------------------------------------------------------
