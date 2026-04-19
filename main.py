@@ -219,6 +219,14 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
             pass
 
 
+async def acs712_power_on_task() -> None:
+    """Wait 5 s after startup, then energize ACS712 Vcc via CH4."""
+    await asyncio.sleep(5.0)
+    cell.set_acs712_power(True)
+    sensors.set_acs712_powered(True)
+    logger.info("Energizing ACS712 power (CH4) — current sensing coming online.")
+
+
 async def state_publish_loop(shutdown: asyncio.Event) -> None:
     """Re-publish retained state every 60 s (handles HA restarts)."""
     while not shutdown.is_set():
@@ -306,6 +314,7 @@ async def main() -> None:
         asyncio.create_task(state_publish_loop(shutdown),    name="state-pub"),
         asyncio.create_task(system_health_loop(shutdown),    name="system-health"),
         asyncio.create_task(_mqtt.message_loop(),             name="mqtt-rx"),
+        asyncio.create_task(acs712_power_on_task(),          name="acs712-power-on"),
     ]
 
     await shutdown.wait()
@@ -316,6 +325,7 @@ async def main() -> None:
         t.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
+    sensors.set_acs712_powered(False)
     pump.close()
     fans.close()
     cell.close()

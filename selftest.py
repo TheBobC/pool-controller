@@ -107,43 +107,43 @@ def run() -> None:
         _pr("ADS1115 I2C", False, f"0x{config.ADS_I2C_ADDR:02X} not found: {exc}")
 
     # ------------------------------------------------------------------
-    # AIR TEMP THERMISTOR — AIN0
+    # POLARITY MONITOR — AIN0
+    # ------------------------------------------------------------------
+    v = voltages[config.ADS_CH_POLARITY]
+    if v is not None:
+        _pr("POLARITY MON (AIN0)", True, f"V={v}V")
+    else:
+        _pr("POLARITY MON (AIN0)", False, "ADS unavailable")
+
+    # ------------------------------------------------------------------
+    # AIR TEMP THERMISTOR — AIN1
     # ------------------------------------------------------------------
     v = voltages[config.ADS_CH_AIR_TEMP]
     if v is not None:
         t_c = _steinhart(v)
         if t_c is not None:
             valid = 0.05 < v < (config.ADS_VCC - 0.05)
-            _pr("AIR TEMP (AIN0)", True if valid else _WARN,
+            _pr("AIR TEMP (AIN1)", True if valid else _WARN,
                 f"{_c_to_f(t_c)}°F  ({t_c}°C, V={v}V)")
         else:
-            _pr("AIR TEMP (AIN0)", _WARN, f"Voltage out of range: {v}V")
+            _pr("AIR TEMP (AIN1)", _WARN, f"Voltage out of range: {v}V")
     else:
-        _pr("AIR TEMP (AIN0)", False, "ADS unavailable")
+        _pr("AIR TEMP (AIN1)", False, "ADS unavailable")
 
     # ------------------------------------------------------------------
-    # WATER TEMP THERMISTOR — AIN1
+    # WATER TEMP THERMISTOR — AIN2 (not connected)
     # ------------------------------------------------------------------
     v = voltages[config.ADS_CH_WATER_TEMP]
     if v is not None:
         t_c = _steinhart(v)
         if t_c is not None:
             valid = 0.05 < v < (config.ADS_VCC - 0.05)
-            _pr("WATER TEMP (AIN1)", valid,
+            _pr("WATER TEMP (AIN2)", True if valid else _WARN,
                 f"{_c_to_f(t_c)}°F  ({t_c}°C, V={v}V)")
         else:
-            _pr("WATER TEMP (AIN1)", False, f"Voltage out of range: {v}V")
+            _pr("WATER TEMP (AIN2)", _WARN, f"Voltage out of range: {v}V")
     else:
-        _pr("WATER TEMP (AIN1)", False, "ADS unavailable")
-
-    # ------------------------------------------------------------------
-    # POLARITY MONITOR — AIN2
-    # ------------------------------------------------------------------
-    v = voltages[config.ADS_CH_POLARITY]
-    if v is not None:
-        _pr("POLARITY MON (AIN2)", True, f"V={v}V")
-    else:
-        _pr("POLARITY MON (AIN2)", False, "ADS unavailable")
+        _pr("WATER TEMP (AIN2)", False, "ADS unavailable")
 
     # ------------------------------------------------------------------
     # CURRENT SENSOR ACS712 — AIN3
@@ -194,18 +194,26 @@ def run() -> None:
 
     # ------------------------------------------------------------------
     # Relay channel write / readback tests
-    # Each: energize → readback 0xFF, de-energize → readback 0x00
-    # try/finally guarantees de-energize even on failure
+    #
+    # CH1 (gate) and CH3 (fans) are tested with raw write/readback via the
+    # selftest-private bus handle.
+    #
+    # CH2 (polarity) MUST NOT be written directly — doing so while CH1 is
+    # energised would damage the salt cell and relay (see CLAUDE.md).
+    # Instead, CH2 is exercised through cell.set_polarity(), which enforces
+    # the gate-off → wait → CH2-write → wait → gate-restore sequence and
+    # re-reads CH1 from hardware immediately before any CH2 write.
     # ------------------------------------------------------------------
-    relay_tests = [
-        ("G RELAY (CH1)",    config.CELL_RELAY_CH_GATE),
-        ("A+B RELAY (CH2)",  config.CELL_RELAY_CH_POLARITY),
-        ("FAN RELAY (CH3)",  config.FAN_RELAY_CH),
+    raw_relay_tests = [
+        ("G RELAY (CH1)",   config.CELL_RELAY_CH_GATE),
+        ("FAN RELAY (CH3)", config.FAN_RELAY_CH),
     ]
 
     if hat_ok and hat_bus is not None:
         addr = config.CELL_I2C_ADDR
-        for label, ch in relay_tests:
+
+        # -- CH1 and CH3: safe to test with raw write/readback --
+        for label, ch in raw_relay_tests:
             rb_on = rb_off = None
             try:
                 hat_bus.write_byte_data(addr, ch, 0xFF)
@@ -229,13 +237,32 @@ def run() -> None:
                 off_s = f"0x{rb_off:02X}" if rb_off is not None else "err"
                 _pr(label, False,
                     f"Readback mismatch: ON={on_s} (exp 0xFF), OFF={off_s} (exp 0x00)")
+
+        # -- CH2 (polarity relay): MUST go through cell.set_polarity() --
+        try:
+            import cell
+            cell.init()
+            # Toggle forward → reverse → forward through the safe sequence.
+            result_rev = cell.set_polarity("reverse")
+            result_fwd = cell.set_polarity("forward")
+            cell.close()
+            if result_rev == "reverse" and result_fwd == "forward":
+                _pr("A+B RELAY (CH2)", True,
+                    "forward→reverse→forward via set_polarity() — sequence enforced")
+            else:
+                _pr("A+B RELAY (CH2)", False,
+                    f"set_polarity returned unexpected values: rev={result_rev!r} fwd={result_fwd!r}")
+        except Exception as exc:
+            _pr("A+B RELAY (CH2)", False, f"set_polarity() failed: {exc}")
+
         try:
             hat_bus.close()
         except Exception:
             pass
     else:
-        for label, _ in relay_tests:
+        for label, _ in raw_relay_tests:
             _pr(label, False, "HAT not available")
+        _pr("A+B RELAY (CH2)", False, "HAT not available")
 
     # ------------------------------------------------------------------
     # DROK 5V rail — inferred from ADS1115 availability

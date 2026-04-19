@@ -7,7 +7,7 @@ Relay map (1-based channel = register number on the HAT):
   CH2  Polarity  — single channel drives both A+B coils (tied in parallel);
                     toggling CH2 flips the cell's applied polarity.
   CH3  Fans      — owned by fans.py.
-  CH4  unused.
+  CH4  ACS712 power — gates ACS712 Vcc; energised 5 s after boot, de-energised at shutdown.
 
 HAT logic (per datasheet, wiring matches silkscreen NO/NC):
   write 0xFF to register N → channel N ENERGISED (relay ON / contact active)
@@ -30,6 +30,8 @@ Polarity switching (toggle_polarity / set_polarity):
 
 Safety interlocks live in safety.py — this module only drives hardware.
 """
+# HARDWARE INVARIANT: CH2 (polarity relay) must only be written via set_polarity().
+# Direct CH2 writes will damage the salt cell and relay. See CLAUDE.md.
 
 import logging
 import time
@@ -55,6 +57,7 @@ _POLARITY_VAL = {
 
 
 def _write_channel(ch: int, val: int) -> None:
+    """INTERNAL ONLY. Do not call directly for CH2 — use set_polarity(). See CLAUDE.md."""
     _bus.write_byte_data(config.CELL_I2C_ADDR, ch, val & 0xFF)
 
 
@@ -92,10 +95,21 @@ def _set_gate(on: bool) -> None:
     _write_channel(config.CELL_RELAY_CH_GATE, RELAY_ON if on else RELAY_OFF)
 
 
-def _set_polarity_relay(polarity: str) -> None:
+def _write_polarity_relay(target_val: int) -> None:
+    """Write target_val to CH2 (polarity relay).
+
+    Re-reads CH1 from hardware immediately before writing.  If CH1 is still
+    energised (reads 0xFF), raises RuntimeError rather than write CH2 under
+    load.  This is the single authoritative CH2 write path.
+    """
     if not _hw_ok or _bus is None:
         return
-    _write_channel(config.CELL_RELAY_CH_POLARITY, _POLARITY_VAL[polarity])
+    ch1_live = _bus.read_byte_data(config.CELL_I2C_ADDR, config.CELL_RELAY_CH_GATE)
+    if ch1_live == RELAY_ON:
+        raise RuntimeError("Gate relay energised — refusing CH2 write")
+    _write_channel(config.CELL_RELAY_CH_POLARITY, target_val)
+    logger.debug("CH%d (polarity relay) → 0x%02X",
+                 config.CELL_RELAY_CH_POLARITY, target_val & 0xFF)
 
 
 def set_cell(on: bool) -> bool:
@@ -168,7 +182,7 @@ def set_polarity(polarity: str) -> str:
     # 3. flip CH2 to target polarity (drives A+B coils simultaneously)
     _polarity = polarity
     try:
-        _set_polarity_relay(_polarity)
+        _write_polarity_relay(_POLARITY_VAL[_polarity])
     except Exception as exc:
         logger.warning("Polarity switch: CH2 flip failed: %s", exc)
     logger.info("Polarity switch: CH%d → %s",
@@ -198,11 +212,30 @@ def toggle_polarity() -> str:
     return set_polarity("reverse" if _polarity == "forward" else "forward")
 
 
+def set_acs712_power(on: bool) -> bool:
+    """Energise or de-energise the ACS712 Vcc power channel (CH4).
+    Returns True on successful hardware write."""
+    if not _hw_ok or _bus is None:
+        logger.debug("ACS712 power set to %s (no hardware)", "ON" if on else "OFF")
+        return False
+    try:
+        _write_channel(config.ACS712_POWER_CHANNEL, RELAY_ON if on else RELAY_OFF)
+        logger.info("ACS712 power (CH%d) → %s", config.ACS712_POWER_CHANNEL, "ON" if on else "OFF")
+        return True
+    except Exception as exc:
+        logger.warning("ACS712 power relay write failed: %s", exc)
+        return False
+
+
 def close() -> None:
-    """De-energise gate on shutdown; leave fans alone."""
+    """De-energise gate and ACS712 power on shutdown; leave fans alone."""
     if _hw_ok:
         try:
             _set_gate(False)
+        except Exception:
+            pass
+        try:
+            _write_channel(config.ACS712_POWER_CHANNEL, RELAY_OFF)
         except Exception:
             pass
     if _bus is not None:

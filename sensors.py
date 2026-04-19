@@ -2,9 +2,9 @@
 sensors.py — All sensor reads.  Every hardware path is non-fatal.
 
 ADS1115 (I2C 0x48):
-  AIN0 → air  temperature thermistor (10kΩ NTC, B=3950)
-  AIN1 → water temperature thermistor (10kΩ NTC, B=3950)
-  AIN2 → salt cell polarity verify    (voltage divider, read-only)
+  AIN0 → salt cell polarity verify    (voltage divider, read-only)
+  AIN1 → air  temperature thermistor  (10kΩ NTC, B=3950)
+  AIN2 → water temperature thermistor (10kΩ NTC, B=3950) — NOT CONNECTED
   AIN3 → ACS712 30A current sensor    (66 mV/A, zero = 2.5 V)
 
 Thermistor voltage-divider: VCC → R_REF(10kΩ) → AINx → Thermistor → GND
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 _ads = None
 _ads_channels: list = []
 _ads_ok = False
+_acs712_powered = False
 
 
 def _init_ads() -> bool:
@@ -92,8 +93,16 @@ def read_air_temp() -> Optional[float]:
     return _steinhart_hart(v) if v is not None else None
 
 
+def set_acs712_powered(on: bool) -> None:
+    global _acs712_powered
+    _acs712_powered = on
+
+
 def read_current() -> Optional[float]:
-    """Return current in Amperes (signed; positive = load direction)."""
+    """Return current in Amperes (signed; positive = load direction).
+    Returns None if ACS712 Vcc has not been energized yet (CH4 gate)."""
+    if not _acs712_powered:
+        return None
     v = _ads_voltage(config.ADS_CH_CURRENT)
     if v is None:
         return None
