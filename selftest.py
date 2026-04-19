@@ -165,7 +165,6 @@ def run() -> None:
         ser = serial.Serial(config.EC_PORT, baudrate=config.EC_BAUD, timeout=2.0)
         ser.read(ser.in_waiting)
         ser.write(b"I\r")
-        ser.flush()
         time.sleep(0.4)
         line = ser.read_until(b"\r").decode("ascii", errors="replace").strip()
         ser.close()
