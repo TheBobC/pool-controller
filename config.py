@@ -23,6 +23,7 @@ PUMP_BAUD = int(os.getenv("PUMP_BAUD", "19200"))
 PUMP_ADDR = 0x01        # EcoStar pump node address
 CTRL_ADDR = 0x0C        # This controller's address on the bus
 PUMP_KEEPALIVE_S = 0.5  # Packet interval; pump reverts to panel if > ~2s gap
+PUMP_VOLTAGE = float(os.getenv("PUMP_VOLTAGE", "230.0"))  # SP3400VSP is 230 V single-phase
 
 # ---------------------------------------------------------------------------
 # Salt cell / enclosure fans — GeeekPi 4-channel relay HAT

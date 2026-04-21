@@ -289,12 +289,17 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
         )
         fans.set_fans(fan_on)
 
+        # Derive pump current from RS-485 watts (EcoStar exposes no current register)
+        pump_watts = pump.get_telemetry().get("watts")
+        pump_current = round(pump_watts / config.PUMP_VOLTAGE, 3) if pump_watts is not None else None
+
         logger.info(
-            "sensors: water=%s air=%s flow=%s current=%s ec=%s fans=%s",
+            "sensors: water=%s air=%s flow=%s cell_current=%s pump_current=%s ec=%s fans=%s",
             f"{round(water_t * 9/5 + 32, 1)}°F" if water_t is not None else "n/a",
             f"{air_t_f}°F"                        if air_t_f is not None else "n/a",
             "ON" if flow else "OFF",
             f"{current:.3f}A"                     if current is not None else "n/a",
+            f"{pump_current:.3f}A"                if pump_current is not None else "n/a",
             f"{ec:.0f}µS/cm"                      if ec is not None else "n/a",
             "ON" if fan_on else "OFF",
         )
@@ -305,8 +310,9 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
             if air_t_f is not None:
                 _mqtt.publish("sensors/air_temp",     air_t_f)
             if current is not None:
-                _mqtt.publish("sensors/current",      current)
                 _mqtt.publish("sensors/cell_current", current)
+            if pump_current is not None:
+                _mqtt.publish("sensors/pump_current", pump_current)
             if ec is not None:
                 _mqtt.publish("sensors/conductivity", ec)
             _mqtt.publish("sensors/flow", "ON" if flow else "OFF")

@@ -31,8 +31,8 @@ MQTT topics  (prefix = jarvis/pool/TudorPool):
   jarvis/pool/TudorPool/fans/state                        published  "ON" / "OFF"
   jarvis/pool/TudorPool/sensors/water_temp      published  °F
   jarvis/pool/TudorPool/sensors/air_temp        published  °F
-  jarvis/pool/TudorPool/sensors/current         published  A  (pump circuit, ACS712)
-  jarvis/pool/TudorPool/sensors/cell_current    published  A  (salt cell circuit)
+  jarvis/pool/TudorPool/sensors/pump_current    published  A  (derived: watts / PUMP_VOLTAGE, from RS-485)
+  jarvis/pool/TudorPool/sensors/cell_current    published  A  (salt cell circuit, ACS712 on AIN3)
   jarvis/pool/TudorPool/sensors/conductivity    published  μS/cm
   jarvis/pool/TudorPool/sensors/flow            published  "ON" / "OFF"
 """
@@ -134,10 +134,11 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("sensor", "jarvis_pool_current", {
         "name": "Pool Pump Current",
         "unique_id": "jarvis_pool_current",
-        "state_topic": f"{T}/sensors/current",
+        "state_topic": f"{T}/sensors/pump_current",
         "unit_of_measurement": "A",
         "device_class": "current",
         "state_class": "measurement",
+        "icon": "mdi:current-ac",
         "device": _DEVICE,
     }),
     ("sensor", "jarvis_pool_cell_current", {
@@ -147,6 +148,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "unit_of_measurement": "A",
         "device_class": "current",
         "state_class": "measurement",
+        "icon": "mdi:current-dc",
         "device": _DEVICE,
     }),
     # ---- Conductivity ----
