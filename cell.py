@@ -44,6 +44,7 @@ _bus = None
 _hw_ok: bool = False
 _cell_on: bool = False
 _polarity: str = "forward"   # "forward" or "reverse"
+_switching: bool = False      # True while set_polarity() sequence is in progress
 
 RELAY_ON  = 0xFF   # energised
 RELAY_OFF = 0x00   # de-energised
@@ -119,6 +120,9 @@ def set_cell(on: bool) -> bool:
     global _cell_on
     _cell_on = on
 
+    if _switching:
+        return False  # polarity switch in progress — suppress concurrent gate writes
+
     if not _hw_ok or _bus is None:
         logger.debug("Cell set to %s (no hardware)", "ON" if on else "OFF")
         return False
@@ -156,7 +160,7 @@ def set_polarity(polarity: str) -> str:
     """Switch to the requested polarity ('forward'|'reverse') using the
     mandated gate-cut / CH2-toggle / gate-restore sequence.  Returns the
     polarity in effect after the call."""
-    global _polarity, _cell_on
+    global _polarity, _cell_on, _switching
     if polarity not in ("forward", "reverse"):
         logger.warning("Bad polarity: %r", polarity)
         return _polarity
@@ -164,46 +168,49 @@ def set_polarity(polarity: str) -> str:
         return _polarity
 
     was_on = _cell_on
-
-    # Phase 2 safety: pre-switch current must reach zero before polarity change;
-    # post-switch current must return within 2 s; verify ADS1115 A2 afterwards.
-
-    # 1. de-energise gate (CH1 OFF)
-    _cell_on = False
+    _switching = True
     try:
-        _set_gate(False)
-    except Exception as exc:
-        logger.warning("Polarity switch: gate-off failed: %s", exc)
-    logger.info("Polarity switch: gate OFF")
+        # Phase 2 safety: pre-switch current must reach zero before polarity change;
+        # post-switch current must return within 2 s; verify ADS1115 A2 afterwards.
 
-    # 2. wait
-    time.sleep(config.POLARITY_SWITCH_DELAY_S)
-
-    # 3. flip CH2 to target polarity (drives A+B coils simultaneously)
-    _polarity = polarity
-    try:
-        _write_polarity_relay(_POLARITY_VAL[_polarity])
-    except Exception as exc:
-        logger.warning("Polarity switch: CH2 flip failed: %s", exc)
-    logger.info("Polarity switch: CH%d → %s",
-                config.CELL_RELAY_CH_POLARITY, _polarity)
-
-    # 4. wait
-    time.sleep(config.POLARITY_SWITCH_DELAY_S)
-
-    # Phase 2 safety: verify ADS1115 A2 polarity-sense matches _polarity here.
-
-    # 5. re-energise gate if cell was on
-    if was_on:
+        # 1. de-energise gate (CH1 OFF)
+        _cell_on = False
         try:
-            _set_gate(True)
-            _cell_on = True
-            logger.info("Polarity switch: gate ON (polarity=%s)", _polarity)
+            _set_gate(False)
         except Exception as exc:
-            logger.warning("Polarity switch: gate-on failed: %s", exc)
-    else:
-        logger.info("Polarity switch: cell was off, leaving gate OFF (polarity=%s)",
-                    _polarity)
+            logger.warning("Polarity switch: gate-off failed: %s", exc)
+        logger.info("Polarity switch: gate OFF")
+
+        # 2. wait
+        time.sleep(config.POLARITY_SWITCH_DELAY_S)
+
+        # 3. flip CH2 to target polarity (drives A+B coils simultaneously)
+        _polarity = polarity
+        try:
+            _write_polarity_relay(_POLARITY_VAL[_polarity])
+        except Exception as exc:
+            logger.warning("Polarity switch: CH2 flip failed: %s", exc)
+        logger.info("Polarity switch: CH%d → %s",
+                    config.CELL_RELAY_CH_POLARITY, _polarity)
+
+        # 4. wait
+        time.sleep(config.POLARITY_SWITCH_DELAY_S)
+
+        # Phase 2 safety: verify ADS1115 A2 polarity-sense matches _polarity here.
+
+        # 5. re-energise gate if cell was on before the switch
+        if was_on:
+            try:
+                _set_gate(True)
+                _cell_on = True
+                logger.info("Polarity switch: gate ON (polarity=%s)", _polarity)
+            except Exception as exc:
+                logger.warning("Polarity switch: gate-on failed: %s", exc)
+        else:
+            logger.info("Polarity switch: cell was off, leaving gate OFF (polarity=%s)",
+                        _polarity)
+    finally:
+        _switching = False
 
     return _polarity
 

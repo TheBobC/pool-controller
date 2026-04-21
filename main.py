@@ -19,6 +19,7 @@ service keeps running and MQTT stays connected.
 """
 
 import asyncio
+import json
 import logging
 import signal
 import subprocess
@@ -49,6 +50,18 @@ _cell_requested: bool = False
 _mqtt: mqtt_client.MQTTClient | None = None
 _main_loop: asyncio.AbstractEventLoop | None = None
 
+# Polarity auto-reverse: accumulated gate-on time for the current polarity period.
+# Persisted in state.json so a restart doesn't reset the clock.
+_polarity_on_time_s: float = 0.0
+_last_cell_on_tick: float | None = None   # monotonic timestamp of last tick cell was ON
+_polarity_reversing: bool = False          # True while an auto-reverse is in flight
+
+# Super chlorinate: forces cell on at 100% duty for 24 h.
+# On restart, active state is preserved but cell does not auto-enable — user must
+# explicitly send cell/set ON for super chlorinate to take effect.
+_super_chlorinate_active: bool = False
+_super_chlorinate_expires_at: float = 0.0  # unix timestamp
+
 
 # ---------------------------------------------------------------------------
 # MQTT command handlers
@@ -73,6 +86,18 @@ def handle_cell_set(on: bool) -> None:
     state.save({"cell_on": on})
 
 
+def handle_cell_trip(reason: str, pump_speed: int, flow_ok: bool) -> None:
+    logger.warning("Cell trip event: reason=%s pump_speed=%d flow=%s", reason, pump_speed, flow_ok)
+    if _super_chlorinate_active:
+        _cancel_super_chlorinate("safety trip")
+    if _mqtt:
+        _mqtt.publish("events/cell_trip", json.dumps({
+            "reason": reason,
+            "pump_speed": pump_speed,
+            "flow_ok": flow_ok,
+        }))
+
+
 async def _do_polarity_toggle() -> None:
     loop = asyncio.get_running_loop()
     # Blocks ~2 * POLARITY_SWITCH_DELAY_S — run in executor
@@ -83,10 +108,66 @@ async def _do_polarity_toggle() -> None:
                       "ON" if cell.get_cell_state() else "OFF", retain=True)
 
 
+async def _auto_polarity_reverse() -> None:
+    """Triggered by safety_check_loop when accumulated on-time reaches threshold."""
+    global _polarity_on_time_s, _polarity_reversing
+    loop = asyncio.get_running_loop()
+    old_polarity = cell.get_polarity()
+    new_polarity = await loop.run_in_executor(None, cell.toggle_polarity)
+    _polarity_on_time_s = 0.0
+    state.save({"polarity_on_time_s": 0.0})
+    _polarity_reversing = False
+    logger.info(
+        "Polarity auto-reverse after %.0f s accumulated on-time: %s → %s",
+        config.CELL_POLARITY_REVERSE_INTERVAL_S, old_polarity, new_polarity,
+    )
+    if _mqtt:
+        _mqtt.publish("cell/polarity", new_polarity, retain=True)
+        _mqtt.publish("cell/state",
+                      "ON" if cell.get_cell_state() else "OFF", retain=True)
+        _mqtt.publish("cell/polarity_on_time_s", 0)
+
+
 def handle_polarity_toggle() -> None:
     logger.info("← cell/cmd/polarity: toggle")
     if _main_loop is not None:
         asyncio.run_coroutine_threadsafe(_do_polarity_toggle(), _main_loop)
+
+
+def _publish_super_chlorinate_state() -> None:
+    if not _mqtt:
+        return
+    _mqtt.publish("cell/super_chlorinate", "ON" if _super_chlorinate_active else "OFF", retain=True)
+    remaining = max(0, int(_super_chlorinate_expires_at - time.time())) if _super_chlorinate_active else 0
+    _mqtt.publish("cell/super_chlorinate_remaining_s", remaining, retain=True)
+
+
+def _cancel_super_chlorinate(reason: str) -> None:
+    global _super_chlorinate_active, _super_chlorinate_expires_at
+    _super_chlorinate_active = False
+    _super_chlorinate_expires_at = 0.0
+    state.save({"super_chlorinate_active": False, "super_chlorinate_expires_at": 0.0})
+    logger.info("Super chlorinate cleared: %s", reason)
+    _publish_super_chlorinate_state()
+
+
+def handle_super_chlorinate_set(on: bool) -> None:
+    global _super_chlorinate_active, _super_chlorinate_expires_at, _cell_requested
+    logger.info("← cell/super_chlorinate/set: %s", "ON" if on else "OFF")
+    if on:
+        _super_chlorinate_active = True
+        _super_chlorinate_expires_at = time.time() + config.SUPER_CHLORINATE_DURATION_S
+        _cell_requested = True
+        state.save({
+            "super_chlorinate_active": True,
+            "super_chlorinate_expires_at": _super_chlorinate_expires_at,
+            "cell_on": True,
+        })
+        logger.info("Super chlorinate activated — expires at %.0f (%.1f h)",
+                    _super_chlorinate_expires_at, config.SUPER_CHLORINATE_DURATION_S / 3600)
+    else:
+        _cancel_super_chlorinate("cancelled by user")
+    _publish_super_chlorinate_state()
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +236,8 @@ async def pump_keepalive_loop(shutdown: asyncio.Event) -> None:
 
 
 async def safety_check_loop(shutdown: asyncio.Event) -> None:
-    """Evaluate cell interlocks every 1 s."""
+    """Evaluate cell interlocks every 1 s; track polarity on-time for auto-reverse."""
+    global _polarity_on_time_s, _last_cell_on_tick, _polarity_reversing
     while not shutdown.is_set():
         flow = sensors.read_flow()
         cell_on = safety.update(
@@ -164,6 +246,22 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
             cell_requested=_cell_requested,
             set_cell_fn=cell.set_cell,
         )
+
+        # Accumulate gate-on time; suppress during the ~6 s polarity switch window
+        now = time.monotonic()
+        if cell_on and not _polarity_reversing:
+            if _last_cell_on_tick is not None:
+                _polarity_on_time_s += now - _last_cell_on_tick
+            _last_cell_on_tick = now
+        else:
+            _last_cell_on_tick = None
+
+        # Trigger auto-reverse when threshold reached
+        if (cell_on and not _polarity_reversing
+                and _polarity_on_time_s >= config.CELL_POLARITY_REVERSE_INTERVAL_S):
+            _polarity_reversing = True
+            asyncio.create_task(_auto_polarity_reverse(), name="polarity-auto-reverse")
+
         if _mqtt:
             _mqtt.publish("cell/state",     "ON" if cell_on else "OFF",              retain=True)
             _mqtt.publish("cell/interlock", "ON" if safety.is_interlock_ok() else "OFF")
@@ -208,6 +306,7 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
                 _mqtt.publish("sensors/air_temp",     air_t_f)
             if current is not None:
                 _mqtt.publish("sensors/current",      current)
+                _mqtt.publish("sensors/cell_current", current)
             if ec is not None:
                 _mqtt.publish("sensors/conductivity", ec)
             _mqtt.publish("sensors/flow", "ON" if flow else "OFF")
@@ -228,13 +327,25 @@ async def acs712_power_on_task() -> None:
 
 
 async def state_publish_loop(shutdown: asyncio.Event) -> None:
-    """Re-publish retained state every 60 s (handles HA restarts)."""
+    """Re-publish retained state every 60 s (handles HA restarts); persist polarity timer."""
     while not shutdown.is_set():
+        # Check super chlorinate expiry
+        if _super_chlorinate_active and time.time() >= _super_chlorinate_expires_at:
+            logger.info("Super chlorinate expired after %.1f h", config.SUPER_CHLORINATE_DURATION_S / 3600)
+            _cancel_super_chlorinate("auto-expired")
+
         if _mqtt and _mqtt.is_connected():
             spd = pump.get_speed()
             _mqtt.publish("pump/speed",   spd,                         retain=True)
             _mqtt.publish("pump/running", "ON" if spd > 0 else "OFF",  retain=True)
             _mqtt.publish("cell/polarity", cell.get_polarity(),         retain=True)
+            accumulated = round(_polarity_on_time_s)
+            remaining = max(0, round(config.CELL_POLARITY_REVERSE_INTERVAL_S - _polarity_on_time_s))
+            _mqtt.publish("cell/polarity_on_time_s",    accumulated)
+            _mqtt.publish("cell/polarity_accumulated_s", accumulated)
+            _mqtt.publish("cell/polarity_remaining_s",   remaining)
+            _publish_super_chlorinate_state()
+        state.save({"polarity_on_time_s": round(_polarity_on_time_s, 1)})
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=60.0)
         except asyncio.TimeoutError:
@@ -270,12 +381,22 @@ async def system_health_loop(shutdown: asyncio.Event) -> None:
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
-    global _mqtt, _cell_requested
+    global _mqtt, _cell_requested, _polarity_on_time_s
+    global _super_chlorinate_active, _super_chlorinate_expires_at
 
     # --- Restore persisted state ---
     saved = state.load()
-    _cell_requested = bool(saved.get("cell_on", False))
+    _cell_requested = False  # never auto-enable cell on restart regardless of saved state
     pump.set_speed(int(saved.get("pump_speed", 0)))
+    _polarity_on_time_s = float(saved.get("polarity_on_time_s", 0.0))
+    _super_chlorinate_active = bool(saved.get("super_chlorinate_active", False))
+    _super_chlorinate_expires_at = float(saved.get("super_chlorinate_expires_at", 0.0))
+    # Clear super chlorinate if it already expired while service was down
+    if _super_chlorinate_active and time.time() >= _super_chlorinate_expires_at:
+        _super_chlorinate_active = False
+        _super_chlorinate_expires_at = 0.0
+        state.save({"super_chlorinate_active": False, "super_chlorinate_expires_at": 0.0})
+        logger.info("Super chlorinate expired while service was stopped — cleared")
 
     # --- Hardware init (all non-fatal) ---
     pump.init()
@@ -291,7 +412,9 @@ async def main() -> None:
     _mqtt.register_speed_handler(handle_speed_set)
     _mqtt.register_cell_handler(handle_cell_set)
     _mqtt.register_polarity_toggle_handler(handle_polarity_toggle)
+    _mqtt.register_super_chlorinate_handler(handle_super_chlorinate_set)
     _mqtt.connect()
+    safety.register_trip_handler(handle_cell_trip)
 
     # --- Shutdown signal ---
     shutdown = asyncio.Event()

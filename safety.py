@@ -29,6 +29,17 @@ logger = logging.getLogger(__name__)
 
 _flow_pump_since: Optional[float] = None  # monotonic timestamp when conditions first met
 _cell_requested: bool = False
+_prev_cell_on: bool = False
+_trip_handler: Optional[Callable] = None
+
+
+def register_trip_handler(fn: Callable) -> None:
+    """Register a callback invoked on interlock-triggered cell shutdowns.
+
+    Signature: fn(reason: str, pump_speed: int, flow_ok: bool)
+    """
+    global _trip_handler
+    _trip_handler = fn
 
 
 def update(
@@ -42,7 +53,7 @@ def update(
 
     Call every ≤1 second.  Returns True if cell is currently energised.
     """
-    global _flow_pump_since, _cell_requested
+    global _flow_pump_since, _cell_requested, _prev_cell_on
     _cell_requested = cell_requested
 
     conditions_met = (pump_speed >= config.CELL_PUMP_MIN_SPEED) and flow_ok
@@ -63,6 +74,13 @@ def update(
         timer_ok = False
 
     allow = cell_requested and conditions_met and timer_ok
+
+    if _prev_cell_on and not allow and cell_requested and _trip_handler is not None:
+        reason = "flow_lost" if not flow_ok else "pump_stopped"
+        logger.warning("Safety: cell trip — %s (pump=%d%% flow=%s)", reason, pump_speed, flow_ok)
+        _trip_handler(reason=reason, pump_speed=pump_speed, flow_ok=flow_ok)
+
+    _prev_cell_on = allow
     set_cell_fn(allow)
     return allow
 

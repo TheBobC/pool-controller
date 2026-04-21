@@ -18,12 +18,17 @@ MQTT topics  (prefix = jarvis/pool/TudorPool):
   jarvis/pool/TudorPool/pump/running            published  "ON" / "OFF"
   jarvis/pool/TudorPool/pump/rpm                published  integer RPM (from EcoStar telemetry)
   jarvis/pool/TudorPool/pump/power              published  watts (from EcoStar telemetry)
-  jarvis/pool/TudorPool/cell/state              published  "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/set                subscribed "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/interlock          published  "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/polarity           published  "forward" / "reverse"
-  jarvis/pool/TudorPool/cell/cmd/polarity       subscribed "toggle"
-  jarvis/pool/TudorPool/fans/state              published  "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/state                        published  "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/set                          subscribed "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/interlock                    published  "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/polarity                     published  "forward" / "reverse"
+  jarvis/pool/TudorPool/cell/cmd/polarity                 subscribed "toggle"
+  jarvis/pool/TudorPool/cell/polarity_accumulated_s       published  integer s (on-time this polarity period)
+  jarvis/pool/TudorPool/cell/polarity_remaining_s         published  integer s (until next auto-reverse)
+  jarvis/pool/TudorPool/cell/super_chlorinate             published  "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/super_chlorinate/set         subscribed "ON" / "OFF"
+  jarvis/pool/TudorPool/cell/super_chlorinate_remaining_s published  integer s (until super chlorinate expires)
+  jarvis/pool/TudorPool/fans/state                        published  "ON" / "OFF"
   jarvis/pool/TudorPool/sensors/water_temp      published  °F
   jarvis/pool/TudorPool/sensors/air_temp        published  °F
   jarvis/pool/TudorPool/sensors/current         published  A  (pump circuit, ACS712)
@@ -56,10 +61,10 @@ _DEVICE = {
 # Stale retained discovery entries to delete from the broker on connect.
 # Publish empty payload to remove them from HA.
 _TOMBSTONES: list[tuple[str, str]] = [
-    ("sensor", "jarvis_pool_controller_spa_temperature"),    # renamed → Pool Air Temperature
-    ("number", "jarvis_pool_controller_pump_set_rpm"),       # removed — RPM is read-only telemetry
-    ("sensor",        "jarvis_pool_controller_pump_power"),  # old prefix → jarvis_pool_pump_power
-    ("binary_sensor", "jarvis_pool_controller_cell_interlock"),  # old prefix → jarvis_pool_cell_interlock
+    ("binary_sensor", "jarvis_pool_cell_allowed"),   # v1 "Cell Interlock" → duplicate of jarvis_pool_cell_interlock
+    ("sensor",        "jarvis_pool_pump_watts"),      # v1 "Pump Power" → duplicate of jarvis_pool_pump_power
+    ("number",        "jarvis_pool_pump_set_rpm"),    # v1 RPM control — removed, RPM is read-only telemetry
+    ("sensor",        "jarvis_pool_spa_temp"),        # v1 "Spa Temperature" — no spa in system
 ]
 
 # (component, unique_id, discovery_payload)
@@ -271,6 +276,59 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "icon": "mdi:lock-check",
         "device": _DEVICE,
     }),
+    ("sensor", "jarvis_pool_polarity_on_time", {
+        "name": "Salt Cell Polarity Timer",
+        "unique_id": "jarvis_pool_polarity_on_time",
+        "state_topic": f"{T}/cell/polarity_on_time_s",
+        "unit_of_measurement": "s",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "icon": "mdi:timer",
+        "device": _DEVICE,
+    }),
+    # ---- Polarity accumulated / remaining (Task 2) ----
+    ("sensor", "jarvis_pool_polarity_accumulated", {
+        "name": "Salt Cell Polarity Accumulated",
+        "unique_id": "jarvis_pool_polarity_accumulated",
+        "state_topic": f"{T}/cell/polarity_accumulated_s",
+        "unit_of_measurement": "s",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "icon": "mdi:timer-play",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_polarity_remaining", {
+        "name": "Salt Cell Polarity Remaining",
+        "unique_id": "jarvis_pool_polarity_remaining",
+        "state_topic": f"{T}/cell/polarity_remaining_s",
+        "unit_of_measurement": "s",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "icon": "mdi:timer-sand",
+        "device": _DEVICE,
+    }),
+    # ---- Super Chlorinate (Task 3) ----
+    ("switch", "jarvis_pool_super_chlorinate", {
+        "name": "Super Chlorinate",
+        "unique_id": "jarvis_pool_super_chlorinate",
+        "command_topic": f"{T}/cell/super_chlorinate/set",
+        "state_topic": f"{T}/cell/super_chlorinate",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:water-plus",
+        "retain": True,
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_super_chlorinate_remaining", {
+        "name": "Super Chlorinate Remaining",
+        "unique_id": "jarvis_pool_super_chlorinate_remaining",
+        "state_topic": f"{T}/cell/super_chlorinate_remaining_s",
+        "unit_of_measurement": "s",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "icon": "mdi:timer-outline",
+        "device": _DEVICE,
+    }),
 ]
 
 
@@ -283,6 +341,7 @@ class MQTTClient:
         self._on_speed_set: Optional[Callable[[int], None]] = None
         self._on_cell_set: Optional[Callable[[bool], None]] = None
         self._on_polarity_toggle: Optional[Callable[[], None]] = None
+        self._on_super_chlorinate_set: Optional[Callable[[bool], None]] = None
 
         self._client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
@@ -309,6 +368,7 @@ class MQTTClient:
         client.subscribe(f"{T}/pump/speed/set")
         client.subscribe(f"{T}/cell/set")
         client.subscribe(f"{T}/cell/cmd/polarity")
+        client.subscribe(f"{T}/cell/super_chlorinate/set")
         client.publish(f"{T}/system/status", "online", qos=1, retain=True)
         self._publish_discovery(client)
 
@@ -371,6 +431,9 @@ class MQTTClient:
     def register_polarity_toggle_handler(self, fn: Callable[[], None]) -> None:
         self._on_polarity_toggle = fn
 
+    def register_super_chlorinate_handler(self, fn: Callable[[bool], None]) -> None:
+        self._on_super_chlorinate_set = fn
+
     async def message_loop(self) -> None:
         """Dispatch inbound commands.  Run as an asyncio task."""
         try:
@@ -395,5 +458,9 @@ class MQTTClient:
                 elif topic == f"{T}/cell/cmd/polarity":
                     if self._on_polarity_toggle:
                         self._on_polarity_toggle()
+
+                elif topic == f"{T}/cell/super_chlorinate/set":
+                    if self._on_super_chlorinate_set:
+                        self._on_super_chlorinate_set(payload.upper() == "ON")
         except asyncio.CancelledError:
             pass
