@@ -29,6 +29,7 @@ WARNING: The EcoStar display panel MUST be physically disconnected
 
 import logging
 import threading
+import time
 
 import config
 
@@ -36,12 +37,35 @@ logger = logging.getLogger(__name__)
 
 _serial = None
 _lock = threading.Lock()
-_speed: int = 0           # current target speed 0–100 %
+_speed: int = 0           # speed actually commanded over RS-485 (100 during preload)
 _connected: bool = False
 
 # Last parsed pump telemetry; None until first valid response is received.
 # Replaced atomically — safe to read from the asyncio thread without a lock.
 _telemetry: dict = {"rpm": None, "watts": None, "reported_speed": None}
+
+# ---------------------------------------------------------------------------
+# Preload state machine
+# ---------------------------------------------------------------------------
+# Any 0→N transition runs at 100% for PRELOAD_DURATION_S before stepping to
+# the requested speed.  Matches config.CELL_FLOW_DELAY_S so the cell interlock
+# clears at the same moment the preload ends.
+#
+# _speed              : actual speed sent over RS-485 (100 during preload)
+# _preload_active     : True while holding at 100% before target step-down
+# _preload_start_time : monotonic timestamp when current preload began
+# _preload_target     : what _speed will become after preload completes
+# _last_startup_time  : monotonic timestamp of last 0→>0 transition
+#
+# Thread safety: all mutations in request_speed() and _tick() are protected
+# by _lock.  get_* readers rely on CPython GIL for atomic primitive reads.
+# ---------------------------------------------------------------------------
+_PRELOAD_SPEED: int = 100
+
+_preload_active: bool = False
+_preload_start_time: float | None = None
+_preload_target: int = 0
+_last_startup_time: float | None = None
 
 # Response frame field offsets (0-indexed from frame byte 0 = DLE 0x10)
 # Observed 13-byte format (single-byte CSUM, SRC=0x00):
@@ -154,6 +178,22 @@ def _try_parse_frame(frame: bytes) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Preload helpers (called under _lock)
+# ---------------------------------------------------------------------------
+
+def _tick() -> None:
+    """Advance preload state machine.  Called from send_keepalive() while _lock held."""
+    global _speed, _preload_active, _preload_start_time, _preload_target
+    if not _preload_active or _preload_start_time is None:
+        return
+    if time.monotonic() - _preload_start_time >= config.CELL_FLOW_DELAY_S:
+        _speed = _preload_target
+        _preload_active = False
+        _preload_start_time = None
+        logger.info("Pump preload complete, stepping to %d%%", _preload_target)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -202,14 +242,83 @@ def init() -> bool:
     return True
 
 
-def set_speed(speed: int) -> None:
-    """Set target speed 0–100 %.  Sent on next keepalive tick."""
-    global _speed
-    _speed = max(0, min(100, speed))
+def request_speed(target: int) -> None:
+    """Request a target speed 0–100 %.  The single chokepoint for all speed changes.
+
+    target = 0  → stop immediately, clear any preload in progress.
+    target > 0  → if pump is stopped OR has been running < CELL_FLOW_DELAY_S since
+                  last startup, preload at 100% for CELL_FLOW_DELAY_S then step down.
+                  If already preloading, update the target without restarting the timer.
+                  If running steadily for ≥ CELL_FLOW_DELAY_S, change speed directly.
+    """
+    global _speed, _preload_active, _preload_start_time, _preload_target, _last_startup_time
+    target = max(0, min(100, target))
+    now = time.monotonic()
+
+    with _lock:
+        if target == 0:
+            _speed = 0
+            _preload_active = False
+            _preload_start_time = None
+            _preload_target = 0
+            _last_startup_time = None
+            return
+
+        if _preload_active:
+            # Already preloading — update destination, keep timer running
+            if _preload_target != target:
+                logger.debug("Pump preload target updated → %d%%", target)
+                _preload_target = target
+            return
+
+        # Decide whether preload is needed
+        needs_preload = (
+            _speed == 0
+            or (_last_startup_time is not None
+                and now - _last_startup_time < config.CELL_FLOW_DELAY_S)
+        )
+
+        if needs_preload:
+            was_zero = (_speed == 0)
+            _preload_active = True
+            _preload_start_time = now
+            _preload_target = target
+            _speed = _PRELOAD_SPEED
+            if was_zero:
+                _last_startup_time = now
+            logger.info(
+                "Pump preload: %d%%→%d%% for %.0fs, then target=%d%%",
+                0 if was_zero else _speed, _PRELOAD_SPEED,
+                config.CELL_FLOW_DELAY_S, target,
+            )
+        else:
+            _speed = target
 
 
 def get_speed() -> int:
+    """Return the speed currently being commanded over RS-485 (100 during preload)."""
     return _speed
+
+
+def get_target_speed() -> int:
+    """Return the user's intended speed (preload_target during preload, _speed otherwise).
+
+    Use this for MQTT state publishing so the HA slider reflects the user's setting,
+    not the transient 100% preload value.
+    """
+    if _preload_active:
+        return _preload_target
+    return _speed
+
+
+def is_preloading() -> bool:
+    return _preload_active
+
+
+def get_preload_remaining_s() -> int:
+    if not _preload_active or _preload_start_time is None:
+        return 0
+    return max(0, int(config.CELL_FLOW_DELAY_S - (time.monotonic() - _preload_start_time)))
 
 
 def is_connected() -> bool:
@@ -229,8 +338,9 @@ def send_keepalive() -> bool:
     global _connected, _telemetry
     if _serial is None:
         return False
-    packet = _build_packet(_speed)
     with _lock:
+        _tick()  # advance preload state before building packet
+        packet = _build_packet(_speed)
         try:
             _serial.write(packet)
             _serial.flush()

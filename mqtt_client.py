@@ -15,9 +15,11 @@ MQTT topics  (prefix = jarvis/pool/TudorPool):
   jarvis/pool/TudorPool/system/uptime_seconds   published  integer s
   jarvis/pool/TudorPool/pump/power_on           published  "ON" / "OFF"
   jarvis/pool/TudorPool/pump/power_on/set       subscribed "ON" / "OFF"
-  jarvis/pool/TudorPool/pump/speed              published  0–100
+  jarvis/pool/TudorPool/pump/speed              published  0–100 (target speed; 100 not published during preload)
   jarvis/pool/TudorPool/pump/speed/set          subscribed 0–100  (ignored when pump power is OFF)
   jarvis/pool/TudorPool/pump/running            published  "ON" / "OFF"
+  jarvis/pool/TudorPool/pump/preload_active     published  "ON" / "OFF"
+  jarvis/pool/TudorPool/pump/preload_remaining_s published integer s (countdown during preload)
   jarvis/pool/TudorPool/pump/rpm                published  integer RPM (from EcoStar telemetry)
   jarvis/pool/TudorPool/pump/power              published  watts (from EcoStar telemetry)
   jarvis/pool/TudorPool/cell/state                        published  "ON" / "OFF"
@@ -73,6 +75,27 @@ _TOMBSTONES: list[tuple[str, str]] = [
 
 # (component, unique_id, discovery_payload)
 _DISCOVERY: list[tuple[str, str, dict]] = [
+    # ---- Pump preload sensors ----
+    ("binary_sensor", "jarvis_pool_pump_preload_active", {
+        "name": "Pump Preload Active",
+        "unique_id": "jarvis_pool_pump_preload_active",
+        "state_topic": f"{T}/pump/preload_active",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "device_class": "running",
+        "icon": "mdi:timer-sand",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_pump_preload_remaining_s", {
+        "name": "Pump Preload Remaining",
+        "unique_id": "jarvis_pool_pump_preload_remaining_s",
+        "state_topic": f"{T}/pump/preload_remaining_s",
+        "unit_of_measurement": "s",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "icon": "mdi:timer-sand",
+        "device": _DEVICE,
+    }),
     # ---- Controls ----
     ("switch", "jarvis_pool_pump_power_on", {
         "name": "Pump Power",

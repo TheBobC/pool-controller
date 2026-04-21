@@ -84,11 +84,11 @@ def handle_speed_set(speed: int) -> None:
     logger.info("← speed/set: %d%%", speed)
     if speed == 0 and pump.get_speed() > 0:
         safety.reset_timer()
-    pump.set_speed(speed)
+    pump.request_speed(speed)
     state.save({"pump_speed": speed})
     if _mqtt:
-        _mqtt.publish("pump/speed",   speed,                        retain=True)
-        _mqtt.publish("pump/running", "ON" if speed > 0 else "OFF", retain=True)
+        _mqtt.publish("pump/speed",   pump.get_target_speed(),               retain=True)
+        _mqtt.publish("pump/running", "ON" if pump.get_speed() > 0 else "OFF", retain=True)
 
 
 def handle_pump_power_set(on: bool) -> None:
@@ -97,19 +97,16 @@ def handle_pump_power_set(on: bool) -> None:
     _pump_power_on = on
     state.save({"pump_power_on": on})
     if on:
-        # Restore last saved speed so pump resumes without requiring a slider touch
         spd = state.get("pump_speed", 0)
-        pump.set_speed(spd)
-        if spd == 0:
-            safety.reset_timer()
+        pump.request_speed(spd)   # triggers preload if spd > 0
         if _mqtt:
-            _mqtt.publish("pump/power_on", "ON",                          retain=True)
-            _mqtt.publish("pump/speed",    spd,                           retain=True)
-            _mqtt.publish("pump/running",  "ON" if spd > 0 else "OFF",   retain=True)
+            _mqtt.publish("pump/power_on", "ON",                                   retain=True)
+            _mqtt.publish("pump/speed",    pump.get_target_speed(),                 retain=True)
+            _mqtt.publish("pump/running",  "ON" if pump.get_speed() > 0 else "OFF", retain=True)
     else:
         if pump.get_speed() > 0:
             safety.reset_timer()
-        pump.set_speed(0)
+        pump.request_speed(0)
         if _mqtt:
             _mqtt.publish("pump/power_on", "OFF", retain=True)
             _mqtt.publish("pump/speed",    0,     retain=True)
@@ -288,6 +285,8 @@ async def pump_keepalive_loop(shutdown: asyncio.Event) -> None:
                 _mqtt.publish("pump/rpm",   telemetry["rpm"])
             if telemetry.get("watts") is not None:
                 _mqtt.publish("pump/power", telemetry["watts"])
+            _mqtt.publish("pump/preload_active",    "ON" if pump.is_preloading() else "OFF")
+            _mqtt.publish("pump/preload_remaining_s", pump.get_preload_remaining_s())
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=config.PUMP_KEEPALIVE_S)
         except asyncio.TimeoutError:
@@ -496,10 +495,10 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _cancel_super_chlorinate("auto-expired")
 
         if _mqtt and _mqtt.is_connected():
-            spd = pump.get_speed()
-            _mqtt.publish("pump/power_on", "ON" if _pump_power_on else "OFF", retain=True)
-            _mqtt.publish("pump/speed",   spd,                         retain=True)
-            _mqtt.publish("pump/running", "ON" if spd > 0 else "OFF",  retain=True)
+            _mqtt.publish("pump/power_on", "ON" if _pump_power_on else "OFF",         retain=True)
+            _mqtt.publish("pump/speed",    pump.get_target_speed(),                    retain=True)
+            _mqtt.publish("pump/running",  "ON" if pump.get_speed() > 0 else "OFF",   retain=True)
+            _mqtt.publish("pump/preload_active", "ON" if pump.is_preloading() else "OFF", retain=True)
             _mqtt.publish("cell/polarity", cell.get_polarity(),         retain=True)
             accumulated = round(_polarity_on_time_s)
             remaining = max(0, round(config.CELL_POLARITY_REVERSE_INTERVAL_S - _polarity_on_time_s))
@@ -555,7 +554,7 @@ async def main() -> None:
     saved = state.load()
     _cell_requested = False   # never auto-enable cell on restart
     _pump_power_on  = False   # never auto-enable pump on restart
-    pump.set_speed(0)         # keepalive sends 0 until user explicitly enables pump power
+    pump.request_speed(0)     # keepalive sends 0 until user explicitly enables pump power
     _polarity_on_time_s = float(saved.get("polarity_on_time_s", 0.0))
     _super_chlorinate_active = bool(saved.get("super_chlorinate_active", False))
     _super_chlorinate_expires_at = float(saved.get("super_chlorinate_expires_at", 0.0))
