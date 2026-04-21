@@ -51,7 +51,8 @@ _telemetry: dict = {"rpm": None, "watts": None, "reported_speed": None}
 #   [4][5] = FLAGS (0x00 0x00)
 #   [6]    = unknown / ignored
 #   [7]    = speed %  (confirmed: 0x32=50%, 0x4B=75%)
-#   [8][9] = watts big-endian uint16 (confirmed: 0x0232=562W@50%, 0x0777=1911W@75%)
+#   [8][9] = watts BCD "read aloud" — each nibble is a decimal digit
+#            e.g. 0x02 0x32 → 0232 → 232W@50%, 0x03 0x94 → 394W@61%, 0x07 0x77 → 777W@75%
 #   [10]   = CSUM  (sum(frame[0:10]) & 0xFF)
 #   [11][12] = DLE ETX
 # RPM derived: int(3450 * speed_pct / 100)  — no RPM field in frame
@@ -142,7 +143,8 @@ def _try_parse_frame(frame: bytes) -> dict | None:
         return None
 
     speed_pct = frame[_OFF_SPEED]
-    watts = (frame[_OFF_WATTS_HI] << 8) | frame[_OFF_WATTS_LO]
+    wh, wl = frame[_OFF_WATTS_HI], frame[_OFF_WATTS_LO]
+    watts = ((wh >> 4) * 1000) + ((wh & 0x0F) * 100) + ((wl >> 4) * 10) + (wl & 0x0F)
     rpm = int(3450 * speed_pct / 100)
     return {
         "reported_speed": speed_pct,
