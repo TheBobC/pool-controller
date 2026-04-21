@@ -226,8 +226,9 @@ def set_acs712_power(on: bool) -> bool:
         logger.debug("ACS712 power set to %s (no hardware)", "ON" if on else "OFF")
         return False
     try:
-        _write_channel(config.ACS712_POWER_CHANNEL, RELAY_ON if on else RELAY_OFF)
-        logger.info("ACS712 power (CH%d) → %s", config.ACS712_POWER_CHANNEL, "ON" if on else "OFF")
+        # CH4 relay wired to NC (normally-closed): invert vs CH1-CH3
+        _write_channel(config.ACS712_POWER_CHANNEL, RELAY_OFF if on else RELAY_ON)
+        logger.info("ACS712 power (CH%d) → %s (NC-wired, inverted)", config.ACS712_POWER_CHANNEL, "ON" if on else "OFF")
         return True
     except Exception as exc:
         logger.warning("ACS712 power relay write failed: %s", exc)
@@ -242,7 +243,7 @@ def close() -> None:
         except Exception:
             pass
         try:
-            _write_channel(config.ACS712_POWER_CHANNEL, RELAY_OFF)
+            _write_channel(config.ACS712_POWER_CHANNEL, RELAY_ON)  # NC-wired: RELAY_ON = power off
         except Exception:
             pass
     if _bus is not None:
