@@ -44,11 +44,13 @@ _connected: bool = False
 _telemetry: dict = {"rpm": None, "watts": None, "reported_speed": None}
 
 # Response frame field offsets (0-indexed from frame byte 0 = DLE 0x10)
-# Layout: DLE STX SRC DST 0x00 SPEED RPM_H RPM_L WATTS_H WATTS_L ... CSUM_H CSUM_L DLE ETX
+# Observed 13-byte format (single-byte CSUM):
+#   DLE STX SRC DST FLAGS SPEED RPM_H RPM_L WATTS_H WATTS_L CSUM DLE ETX
+# SRC is 0x00 in observed responses (pump reports as 0x00, not 0x01).
 _OFF_SPEED    = 5
 _OFF_RPM      = 6   # big-endian uint16 at [6][7]
 _OFF_WATTS    = 8   # big-endian uint16 at [8][9]
-_MIN_RESP_LEN = 14  # 10 data bytes + CSUM_H + CSUM_L + DLE + ETX
+_MIN_RESP_LEN = 13  # minimum: 10 data bytes + CSUM (1 B) + DLE + ETX
 
 
 # ---------------------------------------------------------------------------
@@ -100,19 +102,35 @@ def _parse_response(data: bytes) -> dict | None:
 
 
 def _try_parse_frame(frame: bytes) -> dict | None:
-    """Validate checksum and extract telemetry from one complete DLE-STX…DLE-ETX frame."""
+    """Validate checksum and extract telemetry from one complete DLE-STX…DLE-ETX frame.
+
+    Handles two observed formats:
+      13-byte: 10 data bytes + 1-byte CSUM + DLE + ETX  (SRC = 0x00)
+      14-byte: 10 data bytes + 2-byte CSUM + DLE + ETX  (SRC = PUMP_ADDR)
+    Data offsets (speed/rpm/watts) are the same for both.
+    """
     if len(frame) < _MIN_RESP_LEN:
         return None
 
-    # Accept only frames from the pump addressed to us
-    if frame[2] != config.PUMP_ADDR or frame[3] != config.CTRL_ADDR:
+    # Accept pump→controller frames: SRC must be PUMP_ADDR or 0x00 (observed),
+    # DST must be our CTRL_ADDR.
+    if frame[3] != config.CTRL_ADDR:
+        return None
+    if frame[2] not in (config.PUMP_ADDR, 0x00):
         return None
 
-    # Checksum covers frame[0:-4]; result stored as big-endian uint16 at frame[-4:-2]
-    actual   = sum(frame[:-4]) & 0xFFFF
-    expected = (frame[-4] << 8) | frame[-3]
+    # Determine checksum format by frame length.
+    # 13-byte: single-byte CSUM at frame[-3], covering frame[0:-3]
+    # 14-byte: two-byte big-endian CSUM at frame[-4:-2], covering frame[0:-4]
+    if len(frame) == 13:
+        actual   = sum(frame[:-3]) & 0xFF
+        expected = frame[-3]
+    else:
+        actual   = sum(frame[:-4]) & 0xFFFF
+        expected = (frame[-4] << 8) | frame[-3]
+
     if actual != expected:
-        logger.debug("Pump frame checksum mismatch (calc 0x%04X, frame 0x%04X)", actual, expected)
+        logger.debug("Pump frame checksum mismatch (calc 0x%02X, frame 0x%02X)", actual, expected)
         return None
 
     return {
