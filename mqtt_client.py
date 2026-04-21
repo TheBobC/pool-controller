@@ -25,6 +25,8 @@ MQTT topics  (prefix = jarvis/pool/TudorPool):
   jarvis/pool/TudorPool/cell/cmd/polarity                 subscribed "toggle"
   jarvis/pool/TudorPool/cell/polarity_accumulated_s       published  integer s (on-time this polarity period)
   jarvis/pool/TudorPool/cell/polarity_remaining_s         published  integer s (until next auto-reverse)
+  jarvis/pool/TudorPool/cell/output                       published  integer 0–100 %
+  jarvis/pool/TudorPool/cell/output/set                   subscribed integer 0–100 %
   jarvis/pool/TudorPool/cell/super_chlorinate             published  "ON" / "OFF"
   jarvis/pool/TudorPool/cell/super_chlorinate/set         subscribed "ON" / "OFF"
   jarvis/pool/TudorPool/cell/super_chlorinate_remaining_s published  integer s (until super chlorinate expires)
@@ -303,7 +305,19 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "icon": "mdi:timer-sand",
         "device": _DEVICE,
     }),
-    # ---- Super Chlorinate (Task 3) ----
+    # ---- Cell output duty cycle ----
+    ("number", "jarvis_pool_cell_output", {
+        "name": "Cell Output",
+        "unique_id": "jarvis_pool_cell_output",
+        "command_topic": f"{T}/cell/output/set",
+        "state_topic": f"{T}/cell/output",
+        "min": 0, "max": 100, "step": 1,
+        "unit_of_measurement": "%",
+        "icon": "mdi:brightness-percent",
+        "retain": True,
+        "device": _DEVICE,
+    }),
+    # ---- Super Chlorinate ----
     ("switch", "jarvis_pool_super_chlorinate", {
         "name": "Super Chlorinate",
         "unique_id": "jarvis_pool_super_chlorinate",
@@ -338,6 +352,7 @@ class MQTTClient:
         self._on_cell_set: Optional[Callable[[bool], None]] = None
         self._on_polarity_toggle: Optional[Callable[[], None]] = None
         self._on_super_chlorinate_set: Optional[Callable[[bool], None]] = None
+        self._on_output_set: Optional[Callable[[int], None]] = None
 
         self._client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
@@ -365,6 +380,7 @@ class MQTTClient:
         client.subscribe(f"{T}/cell/set")
         client.subscribe(f"{T}/cell/cmd/polarity")
         client.subscribe(f"{T}/cell/super_chlorinate/set")
+        client.subscribe(f"{T}/cell/output/set")
         client.publish(f"{T}/system/status", "online", qos=1, retain=True)
         self._publish_discovery(client)
 
@@ -430,6 +446,9 @@ class MQTTClient:
     def register_super_chlorinate_handler(self, fn: Callable[[bool], None]) -> None:
         self._on_super_chlorinate_set = fn
 
+    def register_output_handler(self, fn: Callable[[int], None]) -> None:
+        self._on_output_set = fn
+
     async def message_loop(self) -> None:
         """Dispatch inbound commands.  Run as an asyncio task."""
         try:
@@ -458,5 +477,13 @@ class MQTTClient:
                 elif topic == f"{T}/cell/super_chlorinate/set":
                     if self._on_super_chlorinate_set:
                         self._on_super_chlorinate_set(payload.upper() == "ON")
+
+                elif topic == f"{T}/cell/output/set":
+                    try:
+                        pct = int(float(payload))
+                        if self._on_output_set:
+                            self._on_output_set(pct)
+                    except ValueError:
+                        logger.warning("Bad cell output payload: %r", payload)
         except asyncio.CancelledError:
             pass

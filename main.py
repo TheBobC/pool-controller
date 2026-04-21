@@ -62,6 +62,11 @@ _polarity_reversing: bool = False          # True while an auto-reverse is in fl
 _super_chlorinate_active: bool = False
 _super_chlorinate_expires_at: float = 0.0  # unix timestamp
 
+# Duty cycle: user-set output level 0–100 %.
+# cell_duty_cycle_loop drives the gate; safety_check_loop sets _interlocks_ok.
+_cell_output_percent: int = 0
+_interlocks_ok: bool = False  # True when safety permits the gate to be energised
+
 
 # ---------------------------------------------------------------------------
 # MQTT command handlers
@@ -132,6 +137,28 @@ def handle_polarity_toggle() -> None:
     logger.info("← cell/cmd/polarity: toggle")
     if _main_loop is not None:
         asyncio.run_coroutine_threadsafe(_do_polarity_toggle(), _main_loop)
+
+
+def _duty_gate(allow: bool) -> None:
+    """set_cell_fn passed to safety.update() — immediately kills gate on False.
+
+    When allow=False, kills the gate right away.  When True, cell_duty_cycle_loop
+    takes over gate control.  Never calls cell.set_cell(True) directly.
+    """
+    global _interlocks_ok
+    _interlocks_ok = allow
+    if not allow:
+        cell.set_cell(False)
+
+
+def handle_output_set(pct: int) -> None:
+    global _cell_output_percent
+    pct = max(0, min(100, pct))
+    logger.info("← cell/output/set: %d%%", pct)
+    _cell_output_percent = pct
+    state.save({"cell_output_percent": pct})
+    if _mqtt:
+        _mqtt.publish("cell/output", pct, retain=True)
 
 
 def _publish_super_chlorinate_state() -> None:
@@ -236,20 +263,27 @@ async def pump_keepalive_loop(shutdown: asyncio.Event) -> None:
 
 
 async def safety_check_loop(shutdown: asyncio.Event) -> None:
-    """Evaluate cell interlocks every 1 s; track polarity on-time for auto-reverse."""
+    """Evaluate cell interlocks every 1 s; track polarity on-time for auto-reverse.
+
+    Passes _duty_gate as the set_cell_fn so safety kills the gate immediately on
+    any trip while cell_duty_cycle_loop controls gate timing when conditions are met.
+    Polarity on-time accumulates from the actual gate state (not the safety permit),
+    so duty-cycle OFF periods don't inflate the polarity timer.
+    """
     global _polarity_on_time_s, _last_cell_on_tick, _polarity_reversing
     while not shutdown.is_set():
         flow = sensors.read_flow()
-        cell_on = safety.update(
+        safety.update(
             pump_speed=pump.get_speed(),
             flow_ok=flow,
             cell_requested=_cell_requested,
-            set_cell_fn=cell.set_cell,
+            set_cell_fn=_duty_gate,
         )
 
-        # Accumulate gate-on time; suppress during the ~6 s polarity switch window
+        # Use actual hardware gate state; suppress during the ~6 s polarity switch
+        actually_on = cell.get_cell_state()
         now = time.monotonic()
-        if cell_on and not _polarity_reversing:
+        if actually_on and not _polarity_reversing:
             if _last_cell_on_tick is not None:
                 _polarity_on_time_s += now - _last_cell_on_tick
             _last_cell_on_tick = now
@@ -257,13 +291,13 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
             _last_cell_on_tick = None
 
         # Trigger auto-reverse when threshold reached
-        if (cell_on and not _polarity_reversing
+        if (actually_on and not _polarity_reversing
                 and _polarity_on_time_s >= config.CELL_POLARITY_REVERSE_INTERVAL_S):
             _polarity_reversing = True
             asyncio.create_task(_auto_polarity_reverse(), name="polarity-auto-reverse")
 
         if _mqtt:
-            _mqtt.publish("cell/state",     "ON" if cell_on else "OFF",              retain=True)
+            _mqtt.publish("cell/state",     "ON" if actually_on else "OFF",          retain=True)
             _mqtt.publish("cell/interlock", "ON" if safety.is_interlock_ok() else "OFF")
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=1.0)
@@ -332,6 +366,95 @@ async def acs712_power_on_task() -> None:
     logger.info("Energizing ACS712 power (CH4) — current sensing coming online.")
 
 
+async def cell_duty_cycle_loop(shutdown: asyncio.Event) -> None:
+    """Drive cell gate ON/OFF within CELL_DUTY_WINDOW_S duty cycle windows.
+
+    _interlocks_ok is set by _duty_gate (called from safety_check_loop every 1 s).
+    When False, the gate is already off — this loop just waits.
+    When True, this loop turns the gate on/off to honour _cell_output_percent.
+
+    Mid-window output changes: recalculate remaining on-budget against already-used
+    time; cut to OFF immediately if budget exhausted.
+
+    Trip recovery: if the gate was continuously off for ≥ CELL_DUTY_WINDOW_S (trip
+    duration), start a fresh window when conditions return.
+    """
+    TICK = 0.2  # s — poll interval
+
+    window_start: float | None = None   # monotonic timestamp window began
+    window_on_used: float = 0.0         # gate-on seconds used in current window
+    gate_on_since: float | None = None  # monotonic timestamp gate last turned on
+    last_went_off: float | None = None  # monotonic timestamp gate last turned off
+
+    while not shutdown.is_set():
+        now = time.monotonic()
+
+        effective_pct = 100 if _super_chlorinate_active else _cell_output_percent
+
+        if not _interlocks_ok:
+            # Safety has already killed the gate.  Close out gate accumulator.
+            if gate_on_since is not None:
+                window_on_used += now - gate_on_since
+                gate_on_since = None
+            if last_went_off is None:
+                last_went_off = now
+            try:
+                await asyncio.wait_for(shutdown.wait(), timeout=TICK)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        # Conditions met + cell requested.
+
+        # Determine if we need a fresh window:
+        if window_start is None:
+            # First time conditions are met
+            window_start = now
+            window_on_used = 0.0
+        elif (last_went_off is not None
+              and (now - last_went_off) >= config.CELL_DUTY_WINDOW_S):
+            # Off for a full window (e.g. extended trip) — start fresh
+            window_start = now
+            window_on_used = 0.0
+        elif (now - window_start) >= config.CELL_DUTY_WINDOW_S:
+            # Natural window expiry — roll to next window
+            window_start = now
+            window_on_used = 0.0
+
+        last_went_off = None
+
+        # Advance on-time accumulator for gate-on duration since last tick
+        if gate_on_since is not None:
+            window_on_used += now - gate_on_since
+            gate_on_since = now  # re-anchor to avoid double-counting
+
+        on_budget = (effective_pct / 100.0) * config.CELL_DUTY_WINDOW_S
+
+        # Decide target gate state for this tick
+        if effective_pct == 0:
+            target_on = False
+        elif effective_pct == 100:
+            target_on = True
+        else:
+            target_on = (window_on_used < on_budget)
+
+        current = cell.get_cell_state()
+        if target_on and not current:
+            cell.set_cell(True)
+            gate_on_since = now
+        elif not target_on and current:
+            cell.set_cell(False)
+            gate_on_since = None
+            last_went_off = now
+        elif target_on and current and gate_on_since is None:
+            gate_on_since = now  # gate already on (e.g. first tick after conditions met)
+
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=TICK)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def state_publish_loop(shutdown: asyncio.Event) -> None:
     """Re-publish retained state every 60 s (handles HA restarts); persist polarity timer."""
     while not shutdown.is_set():
@@ -353,6 +476,7 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _mqtt.publish("cell/polarity_on_time_s",    accumulated)
             _mqtt.publish("cell/polarity_accumulated_s", _fmt_hm(accumulated))
             _mqtt.publish("cell/polarity_remaining_s",   _fmt_hm(remaining))
+            _mqtt.publish("cell/output", _cell_output_percent, retain=True)
             _publish_super_chlorinate_state()
         state.save({"polarity_on_time_s": round(_polarity_on_time_s, 1)})
         try:
@@ -392,6 +516,7 @@ async def system_health_loop(shutdown: asyncio.Event) -> None:
 async def main() -> None:
     global _mqtt, _cell_requested, _polarity_on_time_s
     global _super_chlorinate_active, _super_chlorinate_expires_at
+    global _cell_output_percent
 
     # --- Restore persisted state ---
     saved = state.load()
@@ -400,6 +525,7 @@ async def main() -> None:
     _polarity_on_time_s = float(saved.get("polarity_on_time_s", 0.0))
     _super_chlorinate_active = bool(saved.get("super_chlorinate_active", False))
     _super_chlorinate_expires_at = float(saved.get("super_chlorinate_expires_at", 0.0))
+    _cell_output_percent = int(saved.get("cell_output_percent", config.CELL_OUTPUT_DEFAULT))
     # Clear super chlorinate if it already expired while service was down
     if _super_chlorinate_active and time.time() >= _super_chlorinate_expires_at:
         _super_chlorinate_active = False
@@ -422,6 +548,7 @@ async def main() -> None:
     _mqtt.register_cell_handler(handle_cell_set)
     _mqtt.register_polarity_toggle_handler(handle_polarity_toggle)
     _mqtt.register_super_chlorinate_handler(handle_super_chlorinate_set)
+    _mqtt.register_output_handler(handle_output_set)
     _mqtt.connect()
     safety.register_trip_handler(handle_cell_trip)
 
@@ -442,6 +569,7 @@ async def main() -> None:
     tasks = [
         asyncio.create_task(pump_keepalive_loop(shutdown),   name="pump-keepalive"),
         asyncio.create_task(safety_check_loop(shutdown),     name="safety"),
+        asyncio.create_task(cell_duty_cycle_loop(shutdown),  name="cell-duty"),
         asyncio.create_task(sensor_read_loop(shutdown),      name="sensors"),
         asyncio.create_task(state_publish_loop(shutdown),    name="state-pub"),
         asyncio.create_task(system_health_loop(shutdown),    name="system-health"),
