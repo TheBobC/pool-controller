@@ -347,9 +347,12 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _mqtt.publish("cell/polarity", cell.get_polarity(),         retain=True)
             accumulated = round(_polarity_on_time_s)
             remaining = max(0, round(config.CELL_POLARITY_REVERSE_INTERVAL_S - _polarity_on_time_s))
+            def _fmt_hm(s: int) -> str:
+                h, m = divmod(s // 60, 60)
+                return f"{h}:{m:02d}"
             _mqtt.publish("cell/polarity_on_time_s",    accumulated)
-            _mqtt.publish("cell/polarity_accumulated_s", accumulated)
-            _mqtt.publish("cell/polarity_remaining_s",   remaining)
+            _mqtt.publish("cell/polarity_accumulated_s", _fmt_hm(accumulated))
+            _mqtt.publish("cell/polarity_remaining_s",   _fmt_hm(remaining))
             _publish_super_chlorinate_state()
         state.save({"polarity_on_time_s": round(_polarity_on_time_s, 1)})
         try:
