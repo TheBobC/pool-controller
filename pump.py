@@ -49,16 +49,16 @@ _telemetry: dict = {"rpm": None, "watts": None, "reported_speed": None}
 #   [2]    = SRC = 0x00  (pump reports 0x00, not PUMP_ADDR 0x01)
 #   [3]    = DST = CTRL_ADDR
 #   [4][5] = FLAGS (0x00 0x00)
-#   [6]    = unknown / ignored
-#   [7]    = speed %  (confirmed: 0x32=50%, 0x4B=75%)
-#   [8][9] = watts BCD "read aloud" — each nibble is a decimal digit
-#            e.g. 0x02 0x32 → 0232 → 232W@50%, 0x03 0x94 → 394W@61%, 0x07 0x77 → 777W@75%
+#   [6]    = speed %  (0x3d=61%, confirmed by live capture; 0x32 coincides with watts low at 50%)
+#   [7][8] = watts BCD "read aloud" — each nibble is a decimal digit
+#            e.g. 0x04 0x05 → 405W@61% (matches display), 0x02 0x32 → 232W@50%
+#   [9]    = 0x00  (padding/unknown)
 #   [10]   = CSUM  (sum(frame[0:10]) & 0xFF)
 #   [11][12] = DLE ETX
 # RPM derived: int(3450 * speed_pct / 100)  — no RPM field in frame
-_OFF_SPEED    = 7
-_OFF_WATTS_HI = 8
-_OFF_WATTS_LO = 9
+_OFF_SPEED    = 6
+_OFF_WATTS_HI = 7
+_OFF_WATTS_LO = 8
 _MIN_RESP_LEN = 13
 
 
