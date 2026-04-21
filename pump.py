@@ -44,13 +44,20 @@ _connected: bool = False
 _telemetry: dict = {"rpm": None, "watts": None, "reported_speed": None}
 
 # Response frame field offsets (0-indexed from frame byte 0 = DLE 0x10)
-# Observed 13-byte format (single-byte CSUM):
-#   DLE STX SRC DST FLAGS SPEED RPM_H RPM_L WATTS_H WATTS_L CSUM DLE ETX
-# SRC is 0x00 in observed responses (pump reports as 0x00, not 0x01).
-_OFF_SPEED    = 5
-_OFF_RPM      = 6   # big-endian uint16 at [6][7]
-_OFF_WATTS    = 8   # big-endian uint16 at [8][9]
-_MIN_RESP_LEN = 13  # minimum: 10 data bytes + CSUM (1 B) + DLE + ETX
+# Observed 13-byte format (single-byte CSUM, SRC=0x00):
+#   [0][1] = DLE STX
+#   [2]    = SRC = 0x00  (pump reports 0x00, not PUMP_ADDR 0x01)
+#   [3]    = DST = CTRL_ADDR
+#   [4][5] = FLAGS (0x00 0x00)
+#   [6]    = reported speed %
+#   [7][8] = RPM  big-endian uint16  (confirmed: 0x0766 = 1894 ≈ expected 1897)
+#   [9]    = 0x00 — watts field absent in 13-byte format
+#   [10]   = CSUM  (sum(frame[0:10]) & 0xFF)
+#   [11][12] = DLE ETX
+_OFF_SPEED    = 6
+_OFF_RPM      = 7   # big-endian uint16 at [7][8]
+_OFF_WATTS    = 9   # placeholder; no watts in 13-byte format (always 0x00)
+_MIN_RESP_LEN = 13
 
 
 # ---------------------------------------------------------------------------
@@ -133,10 +140,11 @@ def _try_parse_frame(frame: bytes) -> dict | None:
         logger.debug("Pump frame checksum mismatch (calc 0x%02X, frame 0x%02X)", actual, expected)
         return None
 
+    watts = None if len(frame) == 13 else (frame[_OFF_WATTS] << 8) | frame[_OFF_WATTS + 1]
     return {
         "reported_speed": frame[_OFF_SPEED],
         "rpm":            (frame[_OFF_RPM]   << 8) | frame[_OFF_RPM   + 1],
-        "watts":          (frame[_OFF_WATTS] << 8) | frame[_OFF_WATTS + 1],
+        "watts":          watts,
     }
 
 
