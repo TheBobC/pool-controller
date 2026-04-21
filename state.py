@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULTS: dict[str, Any] = {
     "pump_speed": 0,
+    "pump_power_on": False,
     "cell_on": False,
     "cell_output_percent": 0,
     "polarity_on_time_s": 0.0,

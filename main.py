@@ -67,6 +67,10 @@ _super_chlorinate_expires_at: float = 0.0  # unix timestamp
 _cell_output_percent: int = 0
 _interlocks_ok: bool = False  # True when safety permits the gate to be energised
 
+# Pump power: gates all speed commands.  Boots OFF — user must explicitly enable.
+# When OFF, keepalive still runs but sends speed=0 so pump doesn't revert to panel.
+_pump_power_on: bool = False
+
 
 # ---------------------------------------------------------------------------
 # MQTT command handlers
@@ -74,6 +78,9 @@ _interlocks_ok: bool = False  # True when safety permits the gate to be energise
 # ---------------------------------------------------------------------------
 
 def handle_speed_set(speed: int) -> None:
+    if not _pump_power_on:
+        logger.debug("← speed/set: %d%% ignored — pump power is OFF", speed)
+        return
     logger.info("← speed/set: %d%%", speed)
     if speed == 0 and pump.get_speed() > 0:
         safety.reset_timer()
@@ -82,6 +89,31 @@ def handle_speed_set(speed: int) -> None:
     if _mqtt:
         _mqtt.publish("pump/speed",   speed,                        retain=True)
         _mqtt.publish("pump/running", "ON" if speed > 0 else "OFF", retain=True)
+
+
+def handle_pump_power_set(on: bool) -> None:
+    global _pump_power_on
+    logger.info("← pump/power_on/set: %s", "ON" if on else "OFF")
+    _pump_power_on = on
+    state.save({"pump_power_on": on})
+    if on:
+        # Restore last saved speed so pump resumes without requiring a slider touch
+        spd = state.get("pump_speed", 0)
+        pump.set_speed(spd)
+        if spd == 0:
+            safety.reset_timer()
+        if _mqtt:
+            _mqtt.publish("pump/power_on", "ON",                          retain=True)
+            _mqtt.publish("pump/speed",    spd,                           retain=True)
+            _mqtt.publish("pump/running",  "ON" if spd > 0 else "OFF",   retain=True)
+    else:
+        if pump.get_speed() > 0:
+            safety.reset_timer()
+        pump.set_speed(0)
+        if _mqtt:
+            _mqtt.publish("pump/power_on", "OFF", retain=True)
+            _mqtt.publish("pump/speed",    0,     retain=True)
+            _mqtt.publish("pump/running",  "OFF", retain=True)
 
 
 def handle_cell_set(on: bool) -> None:
@@ -465,6 +497,7 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
 
         if _mqtt and _mqtt.is_connected():
             spd = pump.get_speed()
+            _mqtt.publish("pump/power_on", "ON" if _pump_power_on else "OFF", retain=True)
             _mqtt.publish("pump/speed",   spd,                         retain=True)
             _mqtt.publish("pump/running", "ON" if spd > 0 else "OFF",  retain=True)
             _mqtt.publish("cell/polarity", cell.get_polarity(),         retain=True)
@@ -516,12 +549,13 @@ async def system_health_loop(shutdown: asyncio.Event) -> None:
 async def main() -> None:
     global _mqtt, _cell_requested, _polarity_on_time_s
     global _super_chlorinate_active, _super_chlorinate_expires_at
-    global _cell_output_percent
+    global _cell_output_percent, _pump_power_on
 
     # --- Restore persisted state ---
     saved = state.load()
-    _cell_requested = False  # never auto-enable cell on restart regardless of saved state
-    pump.set_speed(int(saved.get("pump_speed", 0)))
+    _cell_requested = False   # never auto-enable cell on restart
+    _pump_power_on  = False   # never auto-enable pump on restart
+    pump.set_speed(0)         # keepalive sends 0 until user explicitly enables pump power
     _polarity_on_time_s = float(saved.get("polarity_on_time_s", 0.0))
     _super_chlorinate_active = bool(saved.get("super_chlorinate_active", False))
     _super_chlorinate_expires_at = float(saved.get("super_chlorinate_expires_at", 0.0))
@@ -545,6 +579,7 @@ async def main() -> None:
     _main_loop = loop
     _mqtt = mqtt_client.MQTTClient(loop)
     _mqtt.register_speed_handler(handle_speed_set)
+    _mqtt.register_pump_power_handler(handle_pump_power_set)
     _mqtt.register_cell_handler(handle_cell_set)
     _mqtt.register_polarity_toggle_handler(handle_polarity_toggle)
     _mqtt.register_super_chlorinate_handler(handle_super_chlorinate_set)
@@ -562,8 +597,8 @@ async def main() -> None:
     loop.add_signal_handler(signal.SIGINT,  lambda: _request_shutdown("SIGINT"))
     loop.add_signal_handler(signal.SIGTERM, lambda: _request_shutdown("SIGTERM"))
 
-    logger.info("Pool controller running  (pump=%d%%, cell_req=%s)",
-                pump.get_speed(), _cell_requested)
+    logger.info("Pool controller running  (pump_power=%s pump=%d%% cell_req=%s)",
+                _pump_power_on, pump.get_speed(), _cell_requested)
 
     # --- Run all tasks concurrently ---
     tasks = [

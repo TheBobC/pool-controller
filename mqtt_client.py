@@ -13,8 +13,10 @@ MQTT topics  (prefix = jarvis/pool/TudorPool):
   jarvis/pool/TudorPool/system/disk_percent     published  float %
   jarvis/pool/TudorPool/system/wifi_signal      published  integer dBm
   jarvis/pool/TudorPool/system/uptime_seconds   published  integer s
+  jarvis/pool/TudorPool/pump/power_on           published  "ON" / "OFF"
+  jarvis/pool/TudorPool/pump/power_on/set       subscribed "ON" / "OFF"
   jarvis/pool/TudorPool/pump/speed              published  0–100
-  jarvis/pool/TudorPool/pump/speed/set          subscribed 0–100
+  jarvis/pool/TudorPool/pump/speed/set          subscribed 0–100  (ignored when pump power is OFF)
   jarvis/pool/TudorPool/pump/running            published  "ON" / "OFF"
   jarvis/pool/TudorPool/pump/rpm                published  integer RPM (from EcoStar telemetry)
   jarvis/pool/TudorPool/pump/power              published  watts (from EcoStar telemetry)
@@ -72,6 +74,17 @@ _TOMBSTONES: list[tuple[str, str]] = [
 # (component, unique_id, discovery_payload)
 _DISCOVERY: list[tuple[str, str, dict]] = [
     # ---- Controls ----
+    ("switch", "jarvis_pool_pump_power_on", {
+        "name": "Pump Power",
+        "unique_id": "jarvis_pool_pump_power_on",
+        "command_topic": f"{T}/pump/power_on/set",
+        "state_topic": f"{T}/pump/power_on",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:power",
+        "retain": True,
+        "device": _DEVICE,
+    }),
     ("number", "jarvis_pool_pump_speed", {
         "name": "Pool Pump Speed",
         "unique_id": "jarvis_pool_pump_speed",
@@ -349,6 +362,7 @@ class MQTTClient:
         self._connected = False
 
         self._on_speed_set: Optional[Callable[[int], None]] = None
+        self._on_pump_power_set: Optional[Callable[[bool], None]] = None
         self._on_cell_set: Optional[Callable[[bool], None]] = None
         self._on_polarity_toggle: Optional[Callable[[], None]] = None
         self._on_super_chlorinate_set: Optional[Callable[[bool], None]] = None
@@ -376,6 +390,7 @@ class MQTTClient:
             return
         self._connected = True
         logger.info("MQTT connected → %s:%d", config.MQTT_HOST, config.MQTT_PORT)
+        client.subscribe(f"{T}/pump/power_on/set")
         client.subscribe(f"{T}/pump/speed/set")
         client.subscribe(f"{T}/cell/set")
         client.subscribe(f"{T}/cell/cmd/polarity")
@@ -437,6 +452,9 @@ class MQTTClient:
     def register_speed_handler(self, fn: Callable[[int], None]) -> None:
         self._on_speed_set = fn
 
+    def register_pump_power_handler(self, fn: Callable[[bool], None]) -> None:
+        self._on_pump_power_set = fn
+
     def register_cell_handler(self, fn: Callable[[bool], None]) -> None:
         self._on_cell_set = fn
 
@@ -458,7 +476,11 @@ class MQTTClient:
                 payload = msg.payload.decode("utf-8", errors="replace").strip()
                 logger.debug("MQTT ← %s: %s", topic, payload)
 
-                if topic == f"{T}/pump/speed/set":
+                if topic == f"{T}/pump/power_on/set":
+                    if self._on_pump_power_set:
+                        self._on_pump_power_set(payload.upper() == "ON")
+
+                elif topic == f"{T}/pump/speed/set":
                     try:
                         speed = int(float(payload))
                         if self._on_speed_set:
