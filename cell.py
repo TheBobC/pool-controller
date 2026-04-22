@@ -116,17 +116,27 @@ def _write_polarity_relay(target_val: int) -> None:
 def set_cell(on: bool) -> bool:
     """Energise or de-energise the cell gate (CH1) only.  Polarity relay is
     left as-is.  Tracks intent even when hardware is absent.  Returns True
-    on successful hardware write."""
+    on successful hardware write.
+
+    Idempotent: no hardware write or log if gate is already in the requested
+    state.  This prevents the safety loop (1 Hz) from spamming the log and
+    wearing the relay when the gate is already off.
+    """
     global _cell_on
-    _cell_on = on
 
     if _switching:
-        return False  # polarity switch in progress — suppress concurrent gate writes
+        _cell_on = on  # record intent; hardware write is blocked during polarity switch
+        return False
 
     if not _hw_ok or _bus is None:
+        _cell_on = on
         logger.debug("Cell set to %s (no hardware)", "ON" if on else "OFF")
         return False
 
+    if on == _cell_on:
+        return True  # already in desired state — no I2C write, no log
+
+    _cell_on = on
     try:
         _set_gate(on)
         logger.info("Cell gate (CH%d) → %s  [polarity=%s]",
