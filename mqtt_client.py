@@ -34,6 +34,8 @@ MQTT topics  (prefix = jarvis/pool/TudorPool):
   jarvis/pool/TudorPool/cell/super_chlorinate             published  "ON" / "OFF"
   jarvis/pool/TudorPool/cell/super_chlorinate/set         subscribed "ON" / "OFF"
   jarvis/pool/TudorPool/cell/super_chlorinate_remaining_s published  integer s (until super chlorinate expires)
+  jarvis/pool/TudorPool/cell/actual_duty                  published  integer 0–100 % (rolling 30-min ACS712-measured gate duty)
+  jarvis/pool/TudorPool/cell/actual_duty_confidence       published  integer 0–100 % (0=just started, 100=full 30-min window)
   jarvis/pool/TudorPool/fans/state                        published  "ON" / "OFF"
   jarvis/pool/TudorPool/sensors/water_temp      published  °F
   jarvis/pool/TudorPool/sensors/air_temp        published  °F
@@ -373,6 +375,25 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "device_class": "duration",
         "state_class": "measurement",
         "icon": "mdi:timer-outline",
+        "device": _DEVICE,
+    }),
+    # ---- Cell actual duty tracking ----
+    ("sensor", "jarvis_pool_cell_actual_duty", {
+        "name": "Cell Actual Duty",
+        "unique_id": "jarvis_pool_cell_actual_duty",
+        "state_topic": f"{T}/cell/actual_duty",
+        "unit_of_measurement": "%",
+        "state_class": "measurement",
+        "icon": "mdi:gauge",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_cell_actual_confidence", {
+        "name": "Cell Actual Confidence",
+        "unique_id": "jarvis_pool_cell_actual_confidence",
+        "state_topic": f"{T}/cell/actual_duty_confidence",
+        "unit_of_measurement": "%",
+        "state_class": "measurement",
+        "icon": "mdi:shield-check",
         "device": _DEVICE,
     }),
 ]

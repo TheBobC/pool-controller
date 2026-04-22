@@ -33,6 +33,7 @@ import log_setup
 
 log_setup.setup()
 
+import actual_duty  # noqa: E402
 import cell  # noqa: E402
 import fans  # noqa: E402
 import mqtt_client  # noqa: E402
@@ -66,6 +67,9 @@ _super_chlorinate_expires_at: float = 0.0  # unix timestamp
 # cell_duty_cycle_loop drives the gate; safety_check_loop sets _interlocks_ok.
 _cell_output_percent: int = 0
 _interlocks_ok: bool = False  # True when safety permits the gate to be energised
+
+# Actual duty tracker: ACS712-based rolling 30-min measurement.
+_actual_duty: actual_duty.ActualDutyTracker = actual_duty.ActualDutyTracker()
 
 # Pump power: gates all speed commands.  Boots OFF — user must explicitly enable.
 # When OFF, keepalive still runs but sends speed=0 so pump doesn't revert to panel.
@@ -116,6 +120,8 @@ def handle_pump_power_set(on: bool) -> None:
 def handle_cell_set(on: bool) -> None:
     global _cell_requested
     logger.info("← cell/set: %s", "ON" if on else "OFF")
+    if on and not _cell_requested:
+        _actual_duty.reset()
     _cell_requested = on
     state.save({"cell_on": on})
 
@@ -488,6 +494,19 @@ async def cell_duty_cycle_loop(shutdown: asyncio.Event) -> None:
             pass
 
 
+async def actual_duty_sample_loop(shutdown: asyncio.Event) -> None:
+    """Sample ACS712 current at 1 Hz and feed the actual duty tracker."""
+    loop = asyncio.get_running_loop()
+    while not shutdown.is_set():
+        current = await loop.run_in_executor(None, sensors.read_current)
+        if current is not None:
+            _actual_duty.sample(current)
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def state_publish_loop(shutdown: asyncio.Event) -> None:
     """Re-publish retained state every 60 s (handles HA restarts); persist polarity timer."""
     while not shutdown.is_set():
@@ -511,6 +530,8 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _mqtt.publish("cell/polarity_accumulated_s", _fmt_hm(accumulated))
             _mqtt.publish("cell/polarity_remaining_s",   _fmt_hm(remaining))
             _mqtt.publish("cell/output", 100 if _super_chlorinate_active else _cell_output_percent, retain=True)
+            _mqtt.publish("cell/actual_duty",            _actual_duty.actual_duty_pct(),  retain=True)
+            _mqtt.publish("cell/actual_duty_confidence", _actual_duty.confidence_pct(),   retain=True)
             _publish_super_chlorinate_state()
         state.save({"polarity_on_time_s": round(_polarity_on_time_s, 1)})
         try:
@@ -606,6 +627,7 @@ async def main() -> None:
         asyncio.create_task(pump_keepalive_loop(shutdown),   name="pump-keepalive"),
         asyncio.create_task(safety_check_loop(shutdown),     name="safety"),
         asyncio.create_task(cell_duty_cycle_loop(shutdown),  name="cell-duty"),
+        asyncio.create_task(actual_duty_sample_loop(shutdown), name="actual-duty-sample"),
         asyncio.create_task(sensor_read_loop(shutdown),      name="sensors"),
         asyncio.create_task(state_publish_loop(shutdown),    name="state-pub"),
         asyncio.create_task(system_health_loop(shutdown),    name="system-health"),
