@@ -187,7 +187,7 @@ def handle_output_set(pct: int) -> None:
     _cell_output_percent = pct
     state.save({"cell_output_percent": pct})
     if _mqtt:
-        _mqtt.publish("cell/output", pct, retain=True)
+        _mqtt.publish("cell/output", 100 if _super_chlorinate_active else pct, retain=True)
 
 
 def _publish_super_chlorinate_state() -> None:
@@ -205,6 +205,8 @@ def _cancel_super_chlorinate(reason: str) -> None:
     state.save({"super_chlorinate_active": False, "super_chlorinate_expires_at": 0.0})
     logger.info("Super chlorinate cleared: %s", reason)
     _publish_super_chlorinate_state()
+    if _mqtt:
+        _mqtt.publish("cell/output", _cell_output_percent, retain=True)
 
 
 def handle_super_chlorinate_set(on: bool) -> None:
@@ -508,7 +510,7 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _mqtt.publish("cell/polarity_on_time_s",    accumulated)
             _mqtt.publish("cell/polarity_accumulated_s", _fmt_hm(accumulated))
             _mqtt.publish("cell/polarity_remaining_s",   _fmt_hm(remaining))
-            _mqtt.publish("cell/output", _cell_output_percent, retain=True)
+            _mqtt.publish("cell/output", 100 if _super_chlorinate_active else _cell_output_percent, retain=True)
             _publish_super_chlorinate_state()
         state.save({"polarity_on_time_s": round(_polarity_on_time_s, 1)})
         try:
