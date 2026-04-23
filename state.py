@@ -5,6 +5,7 @@ Writes to a sibling temp file then os.replace() so the on-disk file
 is never half-written.  Safe across hard power cuts.
 """
 
+import datetime
 import json
 import logging
 import os
@@ -24,6 +25,10 @@ _DEFAULTS: dict[str, Any] = {
     "polarity_on_time_s": 0.0,
     "super_chlorinate_active": False,
     "super_chlorinate_remaining_s": 0.0,
+    "service_mode": False,
+    "service_mode_entered_at": None,
+    "pre_service_mode_state": None,
+    "last_state_write": None,
 }
 
 _state: dict[str, Any] = {}
@@ -50,6 +55,7 @@ def save(updates: dict[str, Any]) -> None:
     """Merge *updates* into current state and atomically write to disk."""
     global _state
     _state.update(updates)
+    _state["last_state_write"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     path = Path(config.STATE_FILE)
     try:
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".state_tmp_")

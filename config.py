@@ -96,6 +96,11 @@ SUPER_CHLORINATE_DURATION_S = float(os.getenv("SUPER_CHLORINATE_DURATION_S", "86
 CELL_DUTY_WINDOW_S  = float(os.getenv("CELL_DUTY_WINDOW_S", "600"))   # 10-minute duty cycle window
 CELL_OUTPUT_DEFAULT = int(os.getenv("CELL_OUTPUT_DEFAULT", "0"))       # Boot default; 0 = must explicitly set
 
+# Power recovery and service mode
+POWER_RECOVERY_GRACE_S      = float(os.getenv("POWER_RECOVERY_GRACE_S",      "120"))  # seconds to wait before auto-resume after restart
+SC_PUMP_SPEED_DEFAULT        = int(os.getenv("SC_PUMP_SPEED_DEFAULT",        "55"))   # fallback pump % when resuming SC with no saved speed
+SERVICE_CELL_MIN_PUMP_SPEED  = int(os.getenv("SERVICE_CELL_MIN_PUMP_SPEED",  "40"))   # service mode: auto-boost pump if below this % before cell
+
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------

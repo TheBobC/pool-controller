@@ -19,6 +19,7 @@ service keeps running and MQTT stays connected.
 """
 
 import asyncio
+import datetime
 import json
 import logging
 import signal
@@ -75,6 +76,14 @@ _actual_duty: actual_duty.ActualDutyTracker = actual_duty.ActualDutyTracker()
 # When OFF, keepalive still runs but sends speed=0 so pump doesn't revert to panel.
 _pump_power_on: bool = False
 
+# Service mode: overrides schedule/SC for manual diagnostics; safety interlocks still active
+_service_mode: bool = False
+_service_mode_entered_at: float | None = None       # wall-clock time service mode was entered
+_pre_service_mode_state: dict | None = None         # snapshot taken on service mode entry
+
+# Power recovery: raw state.json snapshot captured before startup overrides
+_startup_snapshot: dict = {}
+
 
 # ---------------------------------------------------------------------------
 # MQTT command handlers
@@ -122,6 +131,18 @@ def handle_cell_set(on: bool) -> None:
     logger.info("← cell/set: %s", "ON" if on else "OFF")
     if on and not _cell_requested:
         _actual_duty.reset()
+    # Service mode pre-flight: pump must be ≥ SERVICE_CELL_MIN_PUMP_SPEED before cell can run
+    if on and _service_mode and pump.get_speed() < config.SERVICE_CELL_MIN_PUMP_SPEED:
+        logger.info(
+            "Service mode cell pre-flight: pump %d%% < %d%% — boosting to 100%%",
+            pump.get_speed(), config.SERVICE_CELL_MIN_PUMP_SPEED,
+        )
+        if not _pump_power_on:
+            handle_pump_power_set(True)
+        pump.request_speed(100)
+        if _mqtt:
+            _mqtt.publish("pump/speed",   pump.get_target_speed(),               retain=True)
+            _mqtt.publish("pump/running", "ON" if pump.get_speed() > 0 else "OFF", retain=True)
     _cell_requested = on
     state.save({"cell_on": on})
 
@@ -204,6 +225,33 @@ def _publish_super_chlorinate_state() -> None:
     _mqtt.publish("cell/super_chlorinate_remaining_s", remaining, retain=True)
 
 
+def _publish_system_mode() -> None:
+    """Publish system/mode and system/service_mode retained topics."""
+    if not _mqtt:
+        return
+    if _service_mode:
+        mode = "service"
+    elif _pump_power_on:
+        mode = "on"
+    else:
+        mode = "off"
+    _mqtt.publish("system/mode",         mode,                               retain=True)
+    _mqtt.publish("system/service_mode", "ON" if _service_mode else "OFF",  retain=True)
+
+
+def _publish_power_recovery(resumed_mode: str, outage_s: int) -> None:
+    """Publish a retained power_recovery event for HA logging."""
+    if not _mqtt:
+        return
+    payload = json.dumps({
+        "outage_duration_s": outage_s,
+        "resumed_mode":      resumed_mode,
+        "timestamp":         datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    })
+    _mqtt.publish("system/power_recovery", payload, retain=True)
+    logger.info("Power recovery event: mode=%s outage=%ds", resumed_mode, outage_s)
+
+
 def _cancel_super_chlorinate(reason: str) -> None:
     global _super_chlorinate_active, _super_chlorinate_remaining_s
     _super_chlorinate_active = False
@@ -235,6 +283,34 @@ def handle_super_chlorinate_set(on: bool) -> None:
     else:
         _cancel_super_chlorinate("cancelled by user")
     _publish_super_chlorinate_state()
+
+
+def handle_service_mode_set(on: bool) -> None:
+    global _service_mode, _service_mode_entered_at, _pre_service_mode_state
+    logger.info("← system/service_mode/set: %s", "ON" if on else "OFF")
+    if on and not _service_mode:
+        _pre_service_mode_state = {
+            "super_chlorinate_active":    _super_chlorinate_active,
+            "super_chlorinate_remaining_s": _super_chlorinate_remaining_s,
+            "cell_requested":             _cell_requested,
+            "pump_power_on":              _pump_power_on,
+            "cell_output_percent":        _cell_output_percent,
+            "pump_speed":                 pump.get_target_speed(),
+        }
+        _service_mode = True
+        _service_mode_entered_at = time.time()
+        logger.info("Service mode entered; pre-state: %s", _pre_service_mode_state)
+    elif not on and _service_mode:
+        _service_mode = False
+        _service_mode_entered_at = None
+        _pre_service_mode_state = None
+        logger.info("Service mode exited")
+    state.save({
+        "service_mode":             _service_mode,
+        "service_mode_entered_at":  _service_mode_entered_at,
+        "pre_service_mode_state":   _pre_service_mode_state,
+    })
+    _publish_system_mode()
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +406,7 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
             if _last_cell_on_tick is not None:
                 delta = now - _last_cell_on_tick
                 _polarity_on_time_s += delta
-                if _super_chlorinate_active:
+                if _super_chlorinate_active and not _service_mode:
                     _super_chlorinate_remaining_s -= delta
                     if _super_chlorinate_remaining_s <= 0:
                         _super_chlorinate_remaining_s = 0.0
@@ -438,7 +514,10 @@ async def cell_duty_cycle_loop(shutdown: asyncio.Event) -> None:
     while not shutdown.is_set():
         now = time.monotonic()
 
-        effective_pct = 100 if _super_chlorinate_active else _cell_output_percent
+        if _service_mode:
+            effective_pct = _cell_output_percent
+        else:
+            effective_pct = 100 if _super_chlorinate_active else _cell_output_percent
 
         if not _interlocks_ok:
             # Safety has already killed the gate.  Close out gate accumulator.
@@ -542,6 +621,10 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _mqtt.publish("cell/actual_duty",            _actual_duty.actual_duty_pct(),  retain=True)
             _mqtt.publish("cell/actual_duty_confidence", _actual_duty.confidence_pct(),   retain=True)
             _publish_super_chlorinate_state()
+            _mqtt.publish("system/service_mode", "ON" if _service_mode else "OFF", retain=True)
+            _mqtt.publish("system/mode",
+                          "service" if _service_mode else ("on" if _pump_power_on else "off"),
+                          retain=True)
         state.save({
             "polarity_on_time_s": round(_polarity_on_time_s, 1),
             "super_chlorinate_remaining_s": round(_super_chlorinate_remaining_s, 1),
@@ -577,6 +660,94 @@ async def system_health_loop(shutdown: asyncio.Event) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Power recovery
+# ---------------------------------------------------------------------------
+
+async def power_recovery_task(shutdown: asyncio.Event) -> None:
+    """Wait POWER_RECOVERY_GRACE_S after startup, then auto-resume pre-restart state.
+
+    Grace period lets MQTT connect, sensors stabilise, and HA re-sync before
+    any automatic pump/cell commands are issued.  Reads _startup_snapshot (the
+    raw state.json values captured before startup overrides) to determine what
+    to resume.
+    """
+    global _pump_power_on, _cell_requested
+    logger.info("Power recovery: %.0fs grace period starting", config.POWER_RECOVERY_GRACE_S)
+    try:
+        await asyncio.wait_for(shutdown.wait(), timeout=config.POWER_RECOVERY_GRACE_S)
+        logger.info("Power recovery: shutdown during grace period — skipping resume")
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    if not _mqtt or not _mqtt.is_connected():
+        logger.warning("Power recovery: MQTT not connected after grace period — skipping auto-resume")
+        return
+
+    # Compute outage duration from last successful state write
+    last_write = state.get("last_state_write")
+    outage_s = 0
+    if last_write:
+        try:
+            last_dt = datetime.datetime.fromisoformat(last_write)
+            now_dt  = datetime.datetime.now(datetime.timezone.utc)
+            outage_s = max(0, int((now_dt - last_dt).total_seconds()))
+        except Exception:
+            pass
+
+    logger.info("Power recovery: grace elapsed (outage ~%ds) — evaluating resume", outage_s)
+
+    if _service_mode:
+        logger.info("Power recovery: service mode persisted — no auto-resume")
+        _publish_power_recovery("service_mode", outage_s)
+        return
+
+    snap = _startup_snapshot
+
+    if snap.get("super_chlorinate_active") and _super_chlorinate_remaining_s > 0:
+        # SC was active and still has cell-on time remaining
+        saved_speed  = snap.get("pump_speed", 0)
+        resume_speed = max(saved_speed, config.SC_PUMP_SPEED_DEFAULT)
+        logger.info(
+            "Power recovery: resuming SC (%.0fs remaining, pump→%d%%)",
+            _super_chlorinate_remaining_s, resume_speed,
+        )
+        pump.request_speed(resume_speed)
+        _pump_power_on  = True
+        _cell_requested = True
+        state.save({"pump_power_on": True, "pump_speed": resume_speed, "cell_on": True})
+        if _mqtt:
+            _mqtt.publish("pump/power_on", "ON",                                    retain=True)
+            _mqtt.publish("pump/speed",    pump.get_target_speed(),                  retain=True)
+            _mqtt.publish("pump/running",  "ON" if pump.get_speed() > 0 else "OFF", retain=True)
+        _publish_power_recovery("super_chlorinate", outage_s)
+
+    elif snap.get("super_chlorinate_active") and _super_chlorinate_remaining_s <= 0:
+        # SC was active but ran out during outage; main() already cleared it
+        logger.info("Power recovery: SC expired during outage — transitioning to normal")
+        _publish_power_recovery("super_chlorinate_expired", outage_s)
+
+    else:
+        # Normal schedule resume: restore last known pump/cell state
+        logger.info("Power recovery: resuming normal schedule state")
+        if snap.get("pump_power_on"):
+            saved_speed = snap.get("pump_speed", 0)
+            pump.request_speed(saved_speed)
+            _pump_power_on = True
+            state.save({"pump_power_on": True, "pump_speed": saved_speed})
+            if _mqtt:
+                _mqtt.publish("pump/power_on", "ON",                                    retain=True)
+                _mqtt.publish("pump/speed",    pump.get_target_speed(),                  retain=True)
+                _mqtt.publish("pump/running",  "ON" if pump.get_speed() > 0 else "OFF", retain=True)
+        if snap.get("cell_on"):
+            _cell_requested = True
+            state.save({"cell_on": True})
+        _publish_power_recovery("schedule", outage_s)
+
+    _publish_system_mode()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -584,9 +755,14 @@ async def main() -> None:
     global _mqtt, _cell_requested, _polarity_on_time_s
     global _super_chlorinate_active, _super_chlorinate_remaining_s
     global _cell_output_percent, _pump_power_on
+    global _startup_snapshot, _service_mode, _service_mode_entered_at, _pre_service_mode_state
 
     # --- Restore persisted state ---
     saved = state.load()
+    _startup_snapshot = dict(saved)
+    _service_mode = bool(saved.get("service_mode", False))
+    _service_mode_entered_at = saved.get("service_mode_entered_at")
+    _pre_service_mode_state = saved.get("pre_service_mode_state")
     _cell_requested = False   # never auto-enable cell on restart
     _pump_power_on  = False   # never auto-enable pump on restart
     pump.request_speed(0)     # keepalive sends 0 until user explicitly enables pump power
@@ -624,6 +800,7 @@ async def main() -> None:
     _mqtt.register_polarity_toggle_handler(handle_polarity_toggle)
     _mqtt.register_super_chlorinate_handler(handle_super_chlorinate_set)
     _mqtt.register_output_handler(handle_output_set)
+    _mqtt.register_service_mode_handler(handle_service_mode_set)
     _mqtt.connect()
     safety.register_trip_handler(handle_cell_trip)
 
@@ -651,6 +828,7 @@ async def main() -> None:
         asyncio.create_task(system_health_loop(shutdown),    name="system-health"),
         asyncio.create_task(_mqtt.message_loop(),             name="mqtt-rx"),
         asyncio.create_task(acs712_power_on_task(),          name="acs712-power-on"),
+        asyncio.create_task(power_recovery_task(shutdown), name="power-recovery"),
     ]
 
     await shutdown.wait()

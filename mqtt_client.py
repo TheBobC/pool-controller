@@ -396,6 +396,25 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "icon": "mdi:shield-check",
         "device": _DEVICE,
     }),
+    # ---- Service mode and system mode ----
+    ("switch", "jarvis_pool_service_mode", {
+        "name":            "Service Mode",
+        "unique_id":       "jarvis_pool_service_mode",
+        "command_topic":   f"{T}/system/service_mode/set",
+        "state_topic":     f"{T}/system/service_mode",
+        "payload_on":      "ON",
+        "payload_off":     "OFF",
+        "icon":            "mdi:wrench",
+        "retain":          True,
+        "device":          _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_system_mode", {
+        "name":      "Pool System Mode",
+        "unique_id": "jarvis_pool_system_mode",
+        "state_topic": f"{T}/system/mode",
+        "icon":      "mdi:pool",
+        "device":    _DEVICE,
+    }),
 ]
 
 
@@ -411,6 +430,7 @@ class MQTTClient:
         self._on_polarity_toggle: Optional[Callable[[], None]] = None
         self._on_super_chlorinate_set: Optional[Callable[[bool], None]] = None
         self._on_output_set: Optional[Callable[[int], None]] = None
+        self._on_service_mode_set: Optional[Callable[[bool], None]] = None
 
         self._client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
@@ -440,6 +460,7 @@ class MQTTClient:
         client.subscribe(f"{T}/cell/cmd/polarity")
         client.subscribe(f"{T}/cell/super_chlorinate/set")
         client.subscribe(f"{T}/cell/output/set")
+        client.subscribe(f"{T}/system/service_mode/set")
         client.publish(f"{T}/system/status", "online", qos=1, retain=True)
         self._publish_discovery(client)
 
@@ -511,6 +532,9 @@ class MQTTClient:
     def register_output_handler(self, fn: Callable[[int], None]) -> None:
         self._on_output_set = fn
 
+    def register_service_mode_handler(self, fn: Callable[[bool], None]) -> None:
+        self._on_service_mode_set = fn
+
     async def message_loop(self) -> None:
         """Dispatch inbound commands.  Run as an asyncio task."""
         try:
@@ -551,5 +575,9 @@ class MQTTClient:
                             self._on_output_set(pct)
                     except ValueError:
                         logger.warning("Bad cell output payload: %r", payload)
+
+                elif topic == f"{T}/system/service_mode/set":
+                    if self._on_service_mode_set:
+                        self._on_service_mode_set(payload.upper() == "ON")
         except asyncio.CancelledError:
             pass
