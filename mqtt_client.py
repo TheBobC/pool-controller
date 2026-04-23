@@ -34,8 +34,8 @@ MQTT topics  (prefix = jarvis/pool/TudorPool):
   jarvis/pool/TudorPool/cell/super_chlorinate             published  "ON" / "OFF"
   jarvis/pool/TudorPool/cell/super_chlorinate/set         subscribed "ON" / "OFF"
   jarvis/pool/TudorPool/cell/super_chlorinate_remaining_s published  integer s (until super chlorinate expires)
-  jarvis/pool/TudorPool/cell/actual_duty                  published  integer 0–100 % (rolling 30-min ACS712-measured gate duty)
-  jarvis/pool/TudorPool/cell/actual_duty_confidence       published  integer 0–100 % (0=just started, 100=full 30-min window)
+  jarvis/pool/TudorPool/cell/actual_duty                  published  integer 0–100 % (rolling 24-hour ACS712-measured gate duty)
+  jarvis/pool/TudorPool/cell/actual_duty_confidence       published  integer 0–100 % (0=just started, 100=full 24-hour window)
   jarvis/pool/TudorPool/fans/state                        published  "ON" / "OFF"
   jarvis/pool/TudorPool/sensors/water_temp      published  °F
   jarvis/pool/TudorPool/sensors/air_temp        published  °F
@@ -377,7 +377,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "icon": "mdi:timer-outline",
         "device": _DEVICE,
     }),
-    # ---- Cell actual duty tracking ----
+    # ---- Cell actual duty tracking (rolling 24-hour window) ----
     ("sensor", "jarvis_pool_cell_actual_duty", {
         "name": "Cell Actual Duty",
         "unique_id": "jarvis_pool_cell_actual_duty",
