@@ -57,11 +57,11 @@ _polarity_on_time_s: float = 0.0
 _last_cell_on_tick: float | None = None   # monotonic timestamp of last tick cell was ON
 _polarity_reversing: bool = False          # True while an auto-reverse is in flight
 
-# Super chlorinate: forces cell on at 100% duty for 24 h.
-# On restart, active state is preserved but cell does not auto-enable — user must
-# explicitly send cell/set ON for super chlorinate to take effect.
+# Super chlorinate: forces cell on at 100% duty until remaining_s reaches zero.
+# Countdown only ticks while the gate is physically energized (cell-on time, not wall clock).
+# On restart, remaining time is restored from state.json; retained MQTT ON does not reset it.
 _super_chlorinate_active: bool = False
-_super_chlorinate_expires_at: float = 0.0  # unix timestamp
+_super_chlorinate_remaining_s: float = 0.0  # seconds of cell-on time remaining
 
 # Duty cycle: user-set output level 0–100 %.
 # cell_duty_cycle_loop drives the gate; safety_check_loop sets _interlocks_ok.
@@ -200,15 +200,15 @@ def _publish_super_chlorinate_state() -> None:
     if not _mqtt:
         return
     _mqtt.publish("cell/super_chlorinate", "ON" if _super_chlorinate_active else "OFF", retain=True)
-    remaining = max(0, int(_super_chlorinate_expires_at - time.time())) if _super_chlorinate_active else 0
+    remaining = max(0, int(_super_chlorinate_remaining_s)) if _super_chlorinate_active else 0
     _mqtt.publish("cell/super_chlorinate_remaining_s", remaining, retain=True)
 
 
 def _cancel_super_chlorinate(reason: str) -> None:
-    global _super_chlorinate_active, _super_chlorinate_expires_at
+    global _super_chlorinate_active, _super_chlorinate_remaining_s
     _super_chlorinate_active = False
-    _super_chlorinate_expires_at = 0.0
-    state.save({"super_chlorinate_active": False, "super_chlorinate_expires_at": 0.0})
+    _super_chlorinate_remaining_s = 0.0
+    state.save({"super_chlorinate_active": False, "super_chlorinate_remaining_s": 0.0})
     logger.info("Super chlorinate cleared: %s", reason)
     _publish_super_chlorinate_state()
     if _mqtt:
@@ -216,19 +216,22 @@ def _cancel_super_chlorinate(reason: str) -> None:
 
 
 def handle_super_chlorinate_set(on: bool) -> None:
-    global _super_chlorinate_active, _super_chlorinate_expires_at, _cell_requested
+    global _super_chlorinate_active, _super_chlorinate_remaining_s, _cell_requested
     logger.info("← cell/super_chlorinate/set: %s", "ON" if on else "OFF")
     if on:
+        is_fresh = not _super_chlorinate_active
+        if is_fresh:
+            _super_chlorinate_remaining_s = float(config.SUPER_CHLORINATE_DURATION_S)
         _super_chlorinate_active = True
-        _super_chlorinate_expires_at = time.time() + config.SUPER_CHLORINATE_DURATION_S
         _cell_requested = True
         state.save({
             "super_chlorinate_active": True,
-            "super_chlorinate_expires_at": _super_chlorinate_expires_at,
+            "super_chlorinate_remaining_s": _super_chlorinate_remaining_s,
             "cell_on": True,
         })
-        logger.info("Super chlorinate activated — expires at %.0f (%.1f h)",
-                    _super_chlorinate_expires_at, config.SUPER_CHLORINATE_DURATION_S / 3600)
+        logger.info("Super chlorinate %s — %.2f h cell-on time remaining",
+                    "activated" if is_fresh else "resumed",
+                    _super_chlorinate_remaining_s / 3600)
     else:
         _cancel_super_chlorinate("cancelled by user")
     _publish_super_chlorinate_state()
@@ -310,6 +313,7 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
     so duty-cycle OFF periods don't inflate the polarity timer.
     """
     global _polarity_on_time_s, _last_cell_on_tick, _polarity_reversing
+    global _super_chlorinate_remaining_s
     while not shutdown.is_set():
         flow = sensors.read_flow()
         safety.update(
@@ -324,7 +328,13 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
         now = time.monotonic()
         if actually_on and not _polarity_reversing:
             if _last_cell_on_tick is not None:
-                _polarity_on_time_s += now - _last_cell_on_tick
+                delta = now - _last_cell_on_tick
+                _polarity_on_time_s += delta
+                if _super_chlorinate_active:
+                    _super_chlorinate_remaining_s -= delta
+                    if _super_chlorinate_remaining_s <= 0:
+                        _super_chlorinate_remaining_s = 0.0
+                        _cancel_super_chlorinate("auto-expired")
             _last_cell_on_tick = now
         else:
             _last_cell_on_tick = None
@@ -510,9 +520,8 @@ async def actual_duty_sample_loop(shutdown: asyncio.Event) -> None:
 async def state_publish_loop(shutdown: asyncio.Event) -> None:
     """Re-publish retained state every 60 s (handles HA restarts); persist polarity timer."""
     while not shutdown.is_set():
-        # Check super chlorinate expiry
-        if _super_chlorinate_active and time.time() >= _super_chlorinate_expires_at:
-            logger.info("Super chlorinate expired after %.1f h", config.SUPER_CHLORINATE_DURATION_S / 3600)
+        # Safety-net expiry check (primary check is in safety_check_loop at 1 Hz)
+        if _super_chlorinate_active and _super_chlorinate_remaining_s <= 0:
             _cancel_super_chlorinate("auto-expired")
 
         if _mqtt and _mqtt.is_connected():
@@ -533,7 +542,10 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _mqtt.publish("cell/actual_duty",            _actual_duty.actual_duty_pct(),  retain=True)
             _mqtt.publish("cell/actual_duty_confidence", _actual_duty.confidence_pct(),   retain=True)
             _publish_super_chlorinate_state()
-        state.save({"polarity_on_time_s": round(_polarity_on_time_s, 1)})
+        state.save({
+            "polarity_on_time_s": round(_polarity_on_time_s, 1),
+            "super_chlorinate_remaining_s": round(_super_chlorinate_remaining_s, 1),
+        })
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=60.0)
         except asyncio.TimeoutError:
@@ -570,7 +582,7 @@ async def system_health_loop(shutdown: asyncio.Event) -> None:
 
 async def main() -> None:
     global _mqtt, _cell_requested, _polarity_on_time_s
-    global _super_chlorinate_active, _super_chlorinate_expires_at
+    global _super_chlorinate_active, _super_chlorinate_remaining_s
     global _cell_output_percent, _pump_power_on
 
     # --- Restore persisted state ---
@@ -580,14 +592,20 @@ async def main() -> None:
     pump.request_speed(0)     # keepalive sends 0 until user explicitly enables pump power
     _polarity_on_time_s = float(saved.get("polarity_on_time_s", 0.0))
     _super_chlorinate_active = bool(saved.get("super_chlorinate_active", False))
-    _super_chlorinate_expires_at = float(saved.get("super_chlorinate_expires_at", 0.0))
+    # Migrate: old installs stored expires_at (wall-clock); convert to remaining_s on first load
+    if "super_chlorinate_remaining_s" in saved:
+        _super_chlorinate_remaining_s = float(saved["super_chlorinate_remaining_s"])
+    elif "super_chlorinate_expires_at" in saved:
+        _super_chlorinate_remaining_s = max(0.0, float(saved["super_chlorinate_expires_at"]) - time.time())
+    else:
+        _super_chlorinate_remaining_s = 0.0
     _cell_output_percent = int(saved.get("cell_output_percent", config.CELL_OUTPUT_DEFAULT))
-    # Clear super chlorinate if it already expired while service was down
-    if _super_chlorinate_active and time.time() >= _super_chlorinate_expires_at:
+    # Clear super chlorinate if it already ran out
+    if _super_chlorinate_active and _super_chlorinate_remaining_s <= 0:
         _super_chlorinate_active = False
-        _super_chlorinate_expires_at = 0.0
-        state.save({"super_chlorinate_active": False, "super_chlorinate_expires_at": 0.0})
-        logger.info("Super chlorinate expired while service was stopped — cleared")
+        _super_chlorinate_remaining_s = 0.0
+        state.save({"super_chlorinate_active": False, "super_chlorinate_remaining_s": 0.0})
+        logger.info("Super chlorinate had no remaining cell-on time — cleared")
 
     # --- Hardware init (all non-fatal) ---
     pump.init()
