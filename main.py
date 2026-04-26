@@ -232,6 +232,7 @@ async def _do_polarity_toggle() -> None:
     loop = asyncio.get_running_loop()
     # Blocks ~2 * POLARITY_SWITCH_DELAY_S — run in executor
     new_polarity = await loop.run_in_executor(None, cell.toggle_polarity)
+    state.save({"polarity_direction": new_polarity})
     if _mqtt:
         _mqtt.publish("cell/polarity", new_polarity, retain=True)
         _mqtt.publish("cell/state",
@@ -245,7 +246,7 @@ async def _auto_polarity_reverse() -> None:
     old_polarity = cell.get_polarity()
     new_polarity = await loop.run_in_executor(None, cell.toggle_polarity)
     _polarity_on_time_s = 0.0
-    state.save({"polarity_on_time_s": 0.0})
+    state.save({"polarity_on_time_s": 0.0, "polarity_direction": new_polarity})
     _polarity_reversing = False
     logger.info(
         "Polarity auto-reverse after %.0f s accumulated on-time: %s → %s",
@@ -891,6 +892,10 @@ async def main() -> None:
     # --- Hardware init (all non-fatal) ---
     pump.init()
     cell.init()
+    # Restore polarity direction from state.json; gate is off so direct CH2 write is safe
+    _saved_polarity = saved.get("polarity_direction", "forward")
+    cell.restore_polarity_at_boot(_saved_polarity)
+    logger.info("Polarity direction restored: %s (accumulator=%.0fs)", _saved_polarity, _polarity_on_time_s)
     fans.init()
     sensors.init()
 

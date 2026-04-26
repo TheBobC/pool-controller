@@ -23,6 +23,7 @@ _DEFAULTS: dict[str, Any] = {
     "cell_on": False,
     "cell_output_percent": 0,
     "polarity_on_time_s": 0.0,
+    "polarity_direction": "forward",
     "super_chlorinate_active": False,
     "super_chlorinate_remaining_s": 0.0,
     "service_mode": False,

@@ -166,6 +166,30 @@ def is_hw_ok() -> bool:
 # Blocks for ~2 * POLARITY_SWITCH_DELAY_S; call from an executor.
 # ---------------------------------------------------------------------------
 
+def restore_polarity_at_boot(polarity: str) -> None:
+    """Restore polarity direction from state.json without the timed switch sequence.
+
+    Called once at startup, after init(), when gate is guaranteed off.
+    Writes CH2 directly — safe because gate (CH1) is de-energized.
+    If hardware is absent, just updates the internal flag.
+    """
+    global _polarity
+    if polarity not in ("forward", "reverse"):
+        logger.warning("Invalid polarity direction '%s' — defaulting to forward", polarity)
+        polarity = "forward"
+    if polarity == _polarity:
+        return
+    _polarity = polarity
+    if _hw_ok and _bus is not None:
+        try:
+            _write_polarity_relay(_POLARITY_VAL[_polarity])
+            logger.info("Boot polarity restore: CH%d → %s", config.CELL_RELAY_CH_POLARITY, _polarity)
+        except Exception as exc:
+            logger.warning("Boot polarity restore write failed: %s", exc)
+    else:
+        logger.info("Boot polarity restore (no hardware): direction set to %s", _polarity)
+
+
 def set_polarity(polarity: str) -> str:
     """Switch to the requested polarity ('forward'|'reverse') using the
     mandated gate-cut / CH2-toggle / gate-restore sequence.  Returns the
