@@ -5,44 +5,60 @@ paho runs its network loop in a background thread (loop_start).
 Inbound messages are forwarded to the asyncio event loop via
 asyncio.call_soon_threadsafe() into an asyncio.Queue.
 
-MQTT topics  (prefix = jarvis/pool/TudorPool):
-  jarvis/pool/TudorPool/system/status           LWT  "online" / "offline"
-  jarvis/pool/TudorPool/system/cpu_percent      published  float %
-  jarvis/pool/TudorPool/system/cpu_temp         published  float °F
-  jarvis/pool/TudorPool/system/memory_percent   published  float %
-  jarvis/pool/TudorPool/system/disk_percent     published  float %
-  jarvis/pool/TudorPool/system/wifi_signal      published  integer dBm
-  jarvis/pool/TudorPool/system/uptime_seconds   published  integer s
-  jarvis/pool/TudorPool/pump/power_on           published  "ON" / "OFF"
-  jarvis/pool/TudorPool/pump/power_on/set       subscribed "ON" / "OFF"
-  jarvis/pool/TudorPool/pump/speed              published  0–100 (target speed; 100 not published during preload)
-  jarvis/pool/TudorPool/pump/speed/set          subscribed 0–100  (ignored when pump power is OFF)
-  jarvis/pool/TudorPool/pump/running            published  "ON" / "OFF"
-  jarvis/pool/TudorPool/pump/preload_active     published  "ON" / "OFF"
-  jarvis/pool/TudorPool/pump/preload_remaining_s published integer s (countdown during preload)
-  jarvis/pool/TudorPool/pump/rpm                published  integer RPM (from EcoStar telemetry)
-  jarvis/pool/TudorPool/pump/power              published  watts (from EcoStar telemetry)
-  jarvis/pool/TudorPool/cell/state                        published  "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/set                          subscribed "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/interlock                    published  "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/polarity                     published  "forward" / "reverse"
-  jarvis/pool/TudorPool/cell/cmd/polarity                 subscribed "toggle"
-  jarvis/pool/TudorPool/cell/polarity_accumulated_s       published  integer s (on-time this polarity period)
-  jarvis/pool/TudorPool/cell/polarity_remaining_s         published  integer s (until next auto-reverse)
-  jarvis/pool/TudorPool/cell/output                       published  integer 0–100 %
-  jarvis/pool/TudorPool/cell/output/set                   subscribed integer 0–100 %
-  jarvis/pool/TudorPool/cell/super_chlorinate             published  "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/super_chlorinate/set         subscribed "ON" / "OFF"
-  jarvis/pool/TudorPool/cell/super_chlorinate_remaining_s published  integer s (until super chlorinate expires)
-  jarvis/pool/TudorPool/cell/actual_duty                  published  integer 0–100 % (rolling 24-hour ACS712-measured gate duty)
-  jarvis/pool/TudorPool/cell/actual_duty_confidence       published  integer 0–100 % (0=just started, 100=full 24-hour window)
-  jarvis/pool/TudorPool/fans/state                        published  "ON" / "OFF"
-  jarvis/pool/TudorPool/sensors/water_temp      published  °F
-  jarvis/pool/TudorPool/sensors/air_temp        published  °F
-  jarvis/pool/TudorPool/sensors/pump_current    published  A  (derived: watts / PUMP_VOLTAGE, from RS-485)
-  jarvis/pool/TudorPool/sensors/cell_current    published  A  (salt cell circuit, ACS712 on AIN3)
-  jarvis/pool/TudorPool/sensors/conductivity    published  μS/cm
-  jarvis/pool/TudorPool/sensors/flow            published  "ON" / "OFF"
+Topic prefix: pool/  (SPEC §10.1; configurable via MQTT_TOPIC_PREFIX)
+Bridge prefix: jarvis/pool/TudorPool  (24-hour dual-publish window; set MQTT_BRIDGE_OLD_PREFIX)
+
+State topics (published by sat4):
+  pool/lwt                      "online" / "offline"  (LWT)
+  pool/pump/state               "ON" / "OFF"
+  pool/pump/output_percent      0–100
+  pool/pump/running             "ON" / "OFF"
+  pool/pump/stable              "ON" / "OFF"
+  pool/pump/countdown           integer s (pump-stable countdown)
+  pool/pump/preload_active      "ON" / "OFF"
+  pool/pump/preload_remaining_s integer s
+  pool/pump/rpm                 integer RPM
+  pool/pump/power               float W
+  pool/cell/on                  "ON" / "OFF"  (user-requested enable state)
+  pool/cell/gate_state          "ON" / "OFF"  (physical gate relay state)
+  pool/cell/output_percent      0–100
+  pool/cell/runtime_percent     0–100 % (rolling 30-min ACS712 duty)
+  pool/cell/actual_duty_confidence 0–100 %
+  pool/cell/countdown           integer s (cell boot-grace countdown)
+  pool/cell/interlock           "ON" / "OFF"
+  pool/cell/polarity_direction  "forward" / "reverse"
+  pool/cell/polarity_accumulator integer s (on-time this polarity period)
+  pool/cell/polarity_accumulated_s formatted HH:MM accumulated
+  pool/cell/polarity_remaining_s   formatted HH:MM until next auto-reverse
+  pool/cell/current_amps        float A
+  pool/sc/active                "ON" / "OFF"
+  pool/sc/remaining             integer s
+  pool/service_mode             "ON" / "OFF"
+  pool/system/mode              "on" / "off" / "service"
+  pool/fault/state              fault name string or "none"
+  pool/notifications            JSON {severity, message}
+  pool/sensors/water_temp       float °F
+  pool/sensors/air_temp         float °F
+  pool/sensors/pump_current     float A
+  pool/sensors/ec               float µS/cm
+  pool/sensors/flow             "ON" / "OFF"
+  pool/fans/state               "ON" / "OFF"
+  pool/system/cpu               float %
+  pool/system/temp              float °F
+  pool/system/memory            float %
+  pool/system/disk              float %
+  pool/system/wifi_signal       integer dBm
+  pool/system/uptime            integer s
+
+Command topics (subscribed by sat4):
+  pool/pump/set                 "ON" / "OFF"
+  pool/pump/output_percent/set  0–100
+  pool/cell/on/set              "ON" / "OFF"
+  pool/cell/output_percent/set  0–100
+  pool/cell/cmd/polarity        "toggle"
+  pool/sc/set                   "ON" / "OFF"
+  pool/service_mode/set         "ON" / "OFF"
+  pool/fault/reset              any payload
 """
 
 import asyncio
@@ -56,8 +72,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
-T = config.TOPIC_PREFIX
-D = config.HA_DISCOVERY_PREFIX
+T     = config.TOPIC_PREFIX            # "pool" (new canonical prefix)
+OLD_T = config.MQTT_BRIDGE_OLD_PREFIX  # "jarvis/pool/TudorPool" during bridge window; "" = disabled
+D     = config.HA_DISCOVERY_PREFIX
 
 _DEVICE = {
     "identifiers": ["jarvis_pool"],
@@ -67,17 +84,16 @@ _DEVICE = {
 }
 
 # Stale retained discovery entries to delete from the broker on connect.
-# Publish empty payload to remove them from HA.
 _TOMBSTONES: list[tuple[str, str]] = [
-    ("binary_sensor", "jarvis_pool_cell_allowed"),   # v1 "Cell Interlock" → duplicate of jarvis_pool_cell_interlock
-    ("sensor",        "jarvis_pool_pump_watts"),      # v1 "Pump Power" → duplicate of jarvis_pool_pump_power
-    ("number",        "jarvis_pool_pump_set_rpm"),    # v1 RPM control — removed, RPM is read-only telemetry
-    ("sensor",        "jarvis_pool_spa_temp"),        # v1 "Spa Temperature" — no spa in system
+    ("binary_sensor", "jarvis_pool_cell_allowed"),
+    ("sensor",        "jarvis_pool_pump_watts"),
+    ("number",        "jarvis_pool_pump_set_rpm"),
+    ("sensor",        "jarvis_pool_spa_temp"),
 ]
 
 # (component, unique_id, discovery_payload)
 _DISCOVERY: list[tuple[str, str, dict]] = [
-    # ---- Pump preload sensors ----
+    # ---- Pump preload ----
     ("binary_sensor", "jarvis_pool_pump_preload_active", {
         "name": "Pump Preload Active",
         "unique_id": "jarvis_pool_pump_preload_active",
@@ -98,12 +114,33 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "icon": "mdi:timer-sand",
         "device": _DEVICE,
     }),
-    # ---- Controls ----
+    # ---- Pump stable ----
+    ("binary_sensor", "jarvis_pool_pump_stable", {
+        "name": "Pump Stable",
+        "unique_id": "jarvis_pool_pump_stable",
+        "state_topic": f"{T}/pump/stable",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "device_class": "running",
+        "icon": "mdi:check-circle",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_pump_stable_countdown", {
+        "name": "Pump Stable Countdown",
+        "unique_id": "jarvis_pool_pump_stable_countdown",
+        "state_topic": f"{T}/pump/countdown",
+        "unit_of_measurement": "s",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "icon": "mdi:timer",
+        "device": _DEVICE,
+    }),
+    # ---- Pump controls ----
     ("switch", "jarvis_pool_pump_power_on", {
         "name": "Pump Power",
         "unique_id": "jarvis_pool_pump_power_on",
-        "command_topic": f"{T}/pump/power_on/set",
-        "state_topic": f"{T}/pump/power_on",
+        "command_topic": f"{T}/pump/set",
+        "state_topic": f"{T}/pump/state",
         "payload_on": "ON",
         "payload_off": "OFF",
         "icon": "mdi:power",
@@ -113,22 +150,55 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("number", "jarvis_pool_pump_speed", {
         "name": "Pool Pump Speed",
         "unique_id": "jarvis_pool_pump_speed",
-        "command_topic": f"{T}/pump/speed/set",
-        "state_topic": f"{T}/pump/speed",
+        "command_topic": f"{T}/pump/output_percent/set",
+        "state_topic": f"{T}/pump/output_percent",
         "min": 0, "max": 100, "step": 1,
         "unit_of_measurement": "%",
         "icon": "mdi:pump",
         "retain": True,
         "device": _DEVICE,
     }),
+    # ---- Cell controls ----
     ("switch", "jarvis_pool_cell", {
         "name": "Pool Salt Cell",
         "unique_id": "jarvis_pool_cell",
-        "command_topic": f"{T}/cell/set",
-        "state_topic": f"{T}/cell/state",
+        "command_topic": f"{T}/cell/on/set",
+        "state_topic": f"{T}/cell/on",
         "payload_on": "ON",
         "payload_off": "OFF",
         "icon": "mdi:lightning-bolt-circle",
+        "retain": True,
+        "device": _DEVICE,
+    }),
+    ("binary_sensor", "jarvis_pool_cell_gate_state", {
+        "name": "Cell Gate State",
+        "unique_id": "jarvis_pool_cell_gate_state",
+        "state_topic": f"{T}/cell/gate_state",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "device_class": "running",
+        "icon": "mdi:gate",
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_cell_countdown", {
+        "name": "Cell Boot Grace Countdown",
+        "unique_id": "jarvis_pool_cell_countdown",
+        "state_topic": f"{T}/cell/countdown",
+        "unit_of_measurement": "s",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "icon": "mdi:timer",
+        "device": _DEVICE,
+    }),
+    # ---- Cell output ----
+    ("number", "jarvis_pool_cell_output", {
+        "name": "Cell Output",
+        "unique_id": "jarvis_pool_cell_output",
+        "command_topic": f"{T}/cell/output_percent/set",
+        "state_topic": f"{T}/cell/output_percent",
+        "min": 0, "max": 100, "step": 1,
+        "unit_of_measurement": "%",
+        "icon": "mdi:brightness-percent",
         "retain": True,
         "device": _DEVICE,
     }),
@@ -151,7 +221,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "state_class": "measurement",
         "device": _DEVICE,
     }),
-    # ---- Pump telemetry (populated when EcoStar telemetry reading is implemented) ----
+    # ---- Pump telemetry ----
     ("sensor", "jarvis_pool_pump_rpm", {
         "name": "Pump RPM",
         "unique_id": "jarvis_pool_pump_rpm",
@@ -184,7 +254,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("sensor", "jarvis_pool_cell_current", {
         "name": "Salt Cell Current",
         "unique_id": "jarvis_pool_cell_current",
-        "state_topic": f"{T}/sensors/cell_current",
+        "state_topic": f"{T}/cell/current_amps",
         "unit_of_measurement": "A",
         "device_class": "current",
         "state_class": "measurement",
@@ -195,17 +265,17 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("sensor", "jarvis_pool_conductivity", {
         "name": "Pool Conductivity",
         "unique_id": "jarvis_pool_conductivity",
-        "state_topic": f"{T}/sensors/conductivity",
+        "state_topic": f"{T}/sensors/ec",
         "unit_of_measurement": "µS/cm",
         "icon": "mdi:water-percent",
         "state_class": "measurement",
         "device": _DEVICE,
     }),
-    # ---- System health ----
+    # ---- System health / online ----
     ("binary_sensor", "jarvis_pool_controller_online", {
         "name": "Pool Controller Online",
         "unique_id": "jarvis_pool_controller_online",
-        "state_topic": f"{T}/system/status",
+        "state_topic": f"{T}/lwt",
         "payload_on": "online",
         "payload_off": "offline",
         "device_class": "connectivity",
@@ -214,7 +284,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("sensor", "jarvis_pool_system_cpu_percent", {
         "name": "Pool Controller CPU",
         "unique_id": "jarvis_pool_system_cpu_percent",
-        "state_topic": f"{T}/system/cpu_percent",
+        "state_topic": f"{T}/system/cpu",
         "unit_of_measurement": "%",
         "state_class": "measurement",
         "icon": "mdi:cpu-64-bit",
@@ -223,7 +293,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("sensor", "jarvis_pool_system_cpu_temp", {
         "name": "Pool Controller CPU Temperature",
         "unique_id": "jarvis_pool_system_cpu_temp",
-        "state_topic": f"{T}/system/cpu_temp",
+        "state_topic": f"{T}/system/temp",
         "unit_of_measurement": "°F",
         "device_class": "temperature",
         "state_class": "measurement",
@@ -232,7 +302,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("sensor", "jarvis_pool_system_memory_percent", {
         "name": "Pool Controller Memory",
         "unique_id": "jarvis_pool_system_memory_percent",
-        "state_topic": f"{T}/system/memory_percent",
+        "state_topic": f"{T}/system/memory",
         "unit_of_measurement": "%",
         "state_class": "measurement",
         "icon": "mdi:memory",
@@ -241,7 +311,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("sensor", "jarvis_pool_system_disk_percent", {
         "name": "Pool Controller Disk",
         "unique_id": "jarvis_pool_system_disk_percent",
-        "state_topic": f"{T}/system/disk_percent",
+        "state_topic": f"{T}/system/disk",
         "unit_of_measurement": "%",
         "state_class": "measurement",
         "icon": "mdi:harddisk",
@@ -259,7 +329,7 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("sensor", "jarvis_pool_system_uptime_seconds", {
         "name": "Pool Controller Uptime",
         "unique_id": "jarvis_pool_system_uptime_seconds",
-        "state_topic": f"{T}/system/uptime_seconds",
+        "state_topic": f"{T}/system/uptime",
         "unit_of_measurement": "s",
         "device_class": "duration",
         "state_class": "total_increasing",
@@ -294,10 +364,11 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "icon": "mdi:fan",
         "device": _DEVICE,
     }),
+    # ---- Polarity ----
     ("sensor", "jarvis_pool_cell_polarity", {
         "name": "Salt Cell Polarity",
         "unique_id": "jarvis_pool_cell_polarity",
-        "state_topic": f"{T}/cell/polarity",
+        "state_topic": f"{T}/cell/polarity_direction",
         "icon": "mdi:swap-horizontal",
         "device": _DEVICE,
     }),
@@ -321,14 +392,13 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
     ("sensor", "jarvis_pool_polarity_on_time", {
         "name": "Salt Cell Polarity Timer",
         "unique_id": "jarvis_pool_polarity_on_time",
-        "state_topic": f"{T}/cell/polarity_on_time_s",
+        "state_topic": f"{T}/cell/polarity_accumulator",
         "unit_of_measurement": "s",
         "device_class": "duration",
         "state_class": "measurement",
         "icon": "mdi:timer",
         "device": _DEVICE,
     }),
-    # ---- Polarity accumulated / remaining (Task 2) ----
     ("sensor", "jarvis_pool_polarity_accumulated", {
         "name": "Salt Cell Polarity Accumulated",
         "unique_id": "jarvis_pool_polarity_accumulated",
@@ -343,45 +413,11 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "icon": "mdi:timer-sand",
         "device": _DEVICE,
     }),
-    # ---- Cell output duty cycle ----
-    ("number", "jarvis_pool_cell_output", {
-        "name": "Cell Output",
-        "unique_id": "jarvis_pool_cell_output",
-        "command_topic": f"{T}/cell/output/set",
-        "state_topic": f"{T}/cell/output",
-        "min": 0, "max": 100, "step": 1,
-        "unit_of_measurement": "%",
-        "icon": "mdi:brightness-percent",
-        "retain": True,
-        "device": _DEVICE,
-    }),
-    # ---- Super Chlorinate ----
-    ("switch", "jarvis_pool_super_chlorinate", {
-        "name": "Super Chlorinate",
-        "unique_id": "jarvis_pool_super_chlorinate",
-        "command_topic": f"{T}/cell/super_chlorinate/set",
-        "state_topic": f"{T}/cell/super_chlorinate",
-        "payload_on": "ON",
-        "payload_off": "OFF",
-        "icon": "mdi:water-plus",
-        "retain": True,
-        "device": _DEVICE,
-    }),
-    ("sensor", "jarvis_pool_super_chlorinate_remaining", {
-        "name": "Super Chlorinate Remaining",
-        "unique_id": "jarvis_pool_super_chlorinate_remaining",
-        "state_topic": f"{T}/cell/super_chlorinate_remaining_s",
-        "unit_of_measurement": "s",
-        "device_class": "duration",
-        "state_class": "measurement",
-        "icon": "mdi:timer-outline",
-        "device": _DEVICE,
-    }),
-    # ---- Cell actual duty tracking (rolling 24-hour window) ----
+    # ---- Cell actual duty ----
     ("sensor", "jarvis_pool_cell_actual_duty", {
         "name": "Cell Actual Duty",
         "unique_id": "jarvis_pool_cell_actual_duty",
-        "state_topic": f"{T}/cell/actual_duty",
+        "state_topic": f"{T}/cell/runtime_percent",
         "unit_of_measurement": "%",
         "state_class": "measurement",
         "icon": "mdi:gauge",
@@ -396,17 +432,39 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "icon": "mdi:shield-check",
         "device": _DEVICE,
     }),
-    # ---- Service mode and system mode ----
+    # ---- Super Chlorinate ----
+    ("switch", "jarvis_pool_super_chlorinate", {
+        "name": "Super Chlorinate",
+        "unique_id": "jarvis_pool_super_chlorinate",
+        "command_topic": f"{T}/sc/set",
+        "state_topic": f"{T}/sc/active",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:water-plus",
+        "retain": True,
+        "device": _DEVICE,
+    }),
+    ("sensor", "jarvis_pool_super_chlorinate_remaining", {
+        "name": "Super Chlorinate Remaining",
+        "unique_id": "jarvis_pool_super_chlorinate_remaining",
+        "state_topic": f"{T}/sc/remaining",
+        "unit_of_measurement": "s",
+        "device_class": "duration",
+        "state_class": "measurement",
+        "icon": "mdi:timer-outline",
+        "device": _DEVICE,
+    }),
+    # ---- Service mode ----
     ("switch", "jarvis_pool_service_mode", {
-        "name":            "Service Mode",
-        "unique_id":       "jarvis_pool_service_mode",
-        "command_topic":   f"{T}/system/service_mode/set",
-        "state_topic":     f"{T}/system/service_mode",
-        "payload_on":      "ON",
-        "payload_off":     "OFF",
-        "icon":            "mdi:wrench",
-        "retain":          True,
-        "device":          _DEVICE,
+        "name":          "Service Mode",
+        "unique_id":     "jarvis_pool_service_mode",
+        "command_topic": f"{T}/service_mode/set",
+        "state_topic":   f"{T}/service_mode",
+        "payload_on":    "ON",
+        "payload_off":   "OFF",
+        "icon":          "mdi:wrench",
+        "retain":        True,
+        "device":        _DEVICE,
     }),
     ("sensor", "jarvis_pool_system_mode", {
         "name":      "Pool System Mode",
@@ -415,6 +473,42 @@ _DISCOVERY: list[tuple[str, str, dict]] = [
         "icon":      "mdi:pool",
         "device":    _DEVICE,
     }),
+    # ---- Fault state + reset ----
+    ("sensor", "jarvis_pool_fault_state", {
+        "name":      "Pool Fault State",
+        "unique_id": "jarvis_pool_fault_state",
+        "state_topic": f"{T}/fault/state",
+        "icon":      "mdi:alert-circle",
+        "device":    _DEVICE,
+    }),
+    ("button", "jarvis_pool_fault_reset", {
+        "name":          "Pool Fault Reset",
+        "unique_id":     "jarvis_pool_fault_reset",
+        "command_topic": f"{T}/fault/reset",
+        "payload_press": "reset",
+        "icon":          "mdi:restart",
+        "device":        _DEVICE,
+    }),
+    # ---- Notifications ----
+    ("sensor", "jarvis_pool_notifications", {
+        "name":      "Pool Notifications",
+        "unique_id": "jarvis_pool_notifications",
+        "state_topic": f"{T}/notifications",
+        "icon":      "mdi:bell",
+        "device":    _DEVICE,
+    }),
+]
+
+# Command subtopics in the new namespace (used for subscribe + dispatch)
+_CMD_SUBTOPICS = [
+    "pump/set",
+    "pump/output_percent/set",
+    "cell/on/set",
+    "cell/cmd/polarity",
+    "sc/set",
+    "cell/output_percent/set",
+    "service_mode/set",
+    "fault/reset",
 ]
 
 
@@ -437,7 +531,7 @@ class MQTTClient:
             mqtt.CallbackAPIVersion.VERSION2,
             client_id="jarvis-pool",
         )
-        self._client.will_set(f"{T}/system/status", "offline", qos=1, retain=True)
+        self._client.will_set(f"{T}/lwt", "offline", qos=1, retain=True)
         if config.MQTT_USER:
             self._client.username_pw_set(config.MQTT_USER, config.MQTT_PASSWORD)
 
@@ -455,15 +549,15 @@ class MQTTClient:
             return
         self._connected = True
         logger.info("MQTT connected → %s:%d", config.MQTT_HOST, config.MQTT_PORT)
-        client.subscribe(f"{T}/pump/power_on/set")
-        client.subscribe(f"{T}/pump/speed/set")
-        client.subscribe(f"{T}/cell/set")
-        client.subscribe(f"{T}/cell/cmd/polarity")
-        client.subscribe(f"{T}/cell/super_chlorinate/set")
-        client.subscribe(f"{T}/cell/output/set")
-        client.subscribe(f"{T}/system/service_mode/set")
-        client.subscribe(f"{T}/fault/reset")
-        client.publish(f"{T}/system/status", "online", qos=1, retain=True)
+        for sub in _CMD_SUBTOPICS:
+            client.subscribe(f"{T}/{sub}")
+        if OLD_T:
+            for sub in _CMD_SUBTOPICS:
+                client.subscribe(f"{OLD_T}/{sub}")
+            logger.info("Bridge subscriptions active on old prefix %s", OLD_T)
+        client.publish(f"{T}/lwt", "online", qos=1, retain=True)
+        if OLD_T:
+            client.publish(f"{OLD_T}/lwt", "online", qos=1, retain=True)
         self._publish_discovery(client)
 
     def _cb_disconnect(self, client, userdata, flags, reason_code, properties):
@@ -471,7 +565,6 @@ class MQTTClient:
         logger.warning("MQTT disconnected: %s (auto-reconnect active)", reason_code)
 
     def _cb_message(self, client, userdata, msg):
-        # Bridge paho thread → asyncio
         self._loop.call_soon_threadsafe(self._queue.put_nowait, msg)
 
     # ------------------------------------------------------------------
@@ -499,22 +592,31 @@ class MQTTClient:
 
     def disconnect(self) -> None:
         try:
-            self._client.publish(f"{T}/system/status", "offline", qos=1, retain=True)
+            self._client.publish(f"{T}/lwt", "offline", qos=1, retain=True)
+            if OLD_T:
+                self._client.publish(f"{OLD_T}/lwt", "offline", qos=1, retain=True)
         except Exception:
             pass
         self._client.loop_stop()
         self._client.disconnect()
 
     def publish(self, subtopic: str, value, retain: bool = False) -> None:
+        """Publish to the canonical prefix; also to old prefix when bridge is enabled."""
         if not self._connected:
             return
         try:
             self._client.publish(f"{T}/{subtopic}", str(value), retain=retain)
+            if OLD_T:
+                self._client.publish(f"{OLD_T}/{subtopic}", str(value), retain=retain)
         except Exception as exc:
             logger.debug("publish error: %s", exc)
 
     def is_connected(self) -> bool:
         return self._connected
+
+    def _topic_match(self, topic: str, subtopic: str) -> bool:
+        """Return True if topic matches the subtopic under the primary or bridge prefix."""
+        return topic == f"{T}/{subtopic}" or (bool(OLD_T) and topic == f"{OLD_T}/{subtopic}")
 
     def register_speed_handler(self, fn: Callable[[int], None]) -> None:
         self._on_speed_set = fn
@@ -549,11 +651,11 @@ class MQTTClient:
                 payload = msg.payload.decode("utf-8", errors="replace").strip()
                 logger.debug("MQTT ← %s: %s", topic, payload)
 
-                if topic == f"{T}/pump/power_on/set":
+                if self._topic_match(topic, "pump/set"):
                     if self._on_pump_power_set:
                         self._on_pump_power_set(payload.upper() == "ON")
 
-                elif topic == f"{T}/pump/speed/set":
+                elif self._topic_match(topic, "pump/output_percent/set"):
                     try:
                         speed = int(float(payload))
                         if self._on_speed_set:
@@ -561,19 +663,19 @@ class MQTTClient:
                     except ValueError:
                         logger.warning("Bad speed payload: %r", payload)
 
-                elif topic == f"{T}/cell/set":
+                elif self._topic_match(topic, "cell/on/set"):
                     if self._on_cell_set:
                         self._on_cell_set(payload.upper() == "ON")
 
-                elif topic == f"{T}/cell/cmd/polarity":
+                elif self._topic_match(topic, "cell/cmd/polarity"):
                     if self._on_polarity_toggle:
                         self._on_polarity_toggle()
 
-                elif topic == f"{T}/cell/super_chlorinate/set":
+                elif self._topic_match(topic, "sc/set"):
                     if self._on_super_chlorinate_set:
                         self._on_super_chlorinate_set(payload.upper() == "ON")
 
-                elif topic == f"{T}/cell/output/set":
+                elif self._topic_match(topic, "cell/output_percent/set"):
                     try:
                         pct = int(float(payload))
                         if self._on_output_set:
@@ -581,12 +683,13 @@ class MQTTClient:
                     except ValueError:
                         logger.warning("Bad cell output payload: %r", payload)
 
-                elif topic == f"{T}/system/service_mode/set":
+                elif self._topic_match(topic, "service_mode/set"):
                     if self._on_service_mode_set:
                         self._on_service_mode_set(payload.upper() == "ON")
 
-                elif topic == f"{T}/fault/reset":
+                elif self._topic_match(topic, "fault/reset"):
                     if self._on_fault_reset:
                         self._on_fault_reset()
+
         except asyncio.CancelledError:
             pass

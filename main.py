@@ -107,8 +107,8 @@ def handle_speed_set(speed: int) -> None:
     pump.request_speed(speed)
     state.save({"pump_output_percent": speed})
     if _mqtt:
-        _mqtt.publish("pump/speed",   pump.get_target_speed(),               retain=True)
-        _mqtt.publish("pump/running", "ON" if pump.get_speed() > 0 else "OFF", retain=True)
+        _mqtt.publish("pump/output_percent", pump.get_target_speed(),               retain=True)
+        _mqtt.publish("pump/running",        "ON" if pump.get_speed() > 0 else "OFF", retain=True)
 
 
 def handle_pump_power_set(on: bool) -> None:
@@ -122,7 +122,7 @@ def handle_pump_power_set(on: bool) -> None:
             logger.warning("Pump enable rejected: boot grace (%ds remaining)", int(remaining))
             _publish_notification("error", f"Pump enable rejected: boot grace ({int(remaining)}s remaining)")
             if _mqtt:
-                _mqtt.publish("pump/boot_grace_remaining_s", int(remaining))
+                _mqtt.publish("pump/boot_grace_remaining_s", int(remaining))  # informational, not in discovery
             return
     _pump_power_on = on
     state.save({"pump_on": on})
@@ -130,17 +130,17 @@ def handle_pump_power_set(on: bool) -> None:
         spd = state.get("pump_output_percent", 0)
         pump.request_speed(spd)   # triggers preload if spd > 0
         if _mqtt:
-            _mqtt.publish("pump/power_on", "ON",                                   retain=True)
-            _mqtt.publish("pump/speed",    pump.get_target_speed(),                 retain=True)
-            _mqtt.publish("pump/running",  "ON" if pump.get_speed() > 0 else "OFF", retain=True)
+            _mqtt.publish("pump/state",          "ON",                                    retain=True)
+            _mqtt.publish("pump/output_percent", pump.get_target_speed(),                  retain=True)
+            _mqtt.publish("pump/running",        "ON" if pump.get_speed() > 0 else "OFF",  retain=True)
     else:
         if pump.get_speed() > 0:
             safety.reset_timer()
         pump.request_speed(0)
         if _mqtt:
-            _mqtt.publish("pump/power_on", "OFF", retain=True)
-            _mqtt.publish("pump/speed",    0,     retain=True)
-            _mqtt.publish("pump/running",  "OFF", retain=True)
+            _mqtt.publish("pump/state",          "OFF", retain=True)
+            _mqtt.publish("pump/output_percent", 0,     retain=True)
+            _mqtt.publish("pump/running",        "OFF", retain=True)
 
 
 def _effective_cell_output() -> int:
@@ -160,7 +160,7 @@ def _effective_cell_output() -> int:
 def _publish_notification(severity: str, message: str) -> None:
     """Publish a human-readable notification to the notifications topic."""
     if _mqtt:
-        _mqtt.publish("system/notifications", json.dumps({
+        _mqtt.publish("notifications", json.dumps({
             "severity": severity,
             "message":  message,
         }))
@@ -177,7 +177,7 @@ def handle_cell_set(on: bool) -> None:
             logger.warning("Cell enable rejected: boot grace (%ds remaining)", int(remaining))
             if _mqtt:
                 _mqtt.publish("cell/cant_enable_reason", f"boot_grace:{int(remaining)}s", retain=True)
-                _mqtt.publish("cell/boot_grace_remaining_s", int(remaining))
+                _mqtt.publish("cell/countdown", int(remaining))
             _publish_notification("error", f"Cell enable rejected: boot grace ({int(remaining)}s remaining)")
             return
     if on and _fault_state is not None:
@@ -224,10 +224,12 @@ def handle_cell_set(on: bool) -> None:
             handle_pump_power_set(True)
         pump.request_speed(100)
         if _mqtt:
-            _mqtt.publish("pump/speed",   pump.get_target_speed(),               retain=True)
-            _mqtt.publish("pump/running", "ON" if pump.get_speed() > 0 else "OFF", retain=True)
+            _mqtt.publish("pump/output_percent", pump.get_target_speed(),               retain=True)
+            _mqtt.publish("pump/running",        "ON" if pump.get_speed() > 0 else "OFF", retain=True)
     _cell_requested = on
     state.save({"cell_on": on})
+    if _mqtt:
+        _mqtt.publish("cell/on", "ON" if _cell_requested else "OFF", retain=True)
 
 
 def handle_cell_trip(reason: str, pump_speed: int, flow_ok: bool) -> None:
@@ -244,11 +246,12 @@ def handle_cell_trip(reason: str, pump_speed: int, flow_ok: bool) -> None:
     if _super_chlorinate_active:
         _cancel_super_chlorinate("safety trip")
     state.save({"fault_state": reason, "cell_on": False, "cell_output_percent": 0})
+    _publish_notification("critical", f"Cell safety trip: {reason}")
     if _mqtt:
-        _mqtt.publish("fault/state",       reason,                          retain=True)
-        _mqtt.publish("cell/on",           "OFF",                           retain=True)
-        _mqtt.publish("cell/output",       0,                               retain=True)
-        _mqtt.publish("events/cell_trip",  json.dumps({
+        _mqtt.publish("fault/state",      reason,                          retain=True)
+        _mqtt.publish("cell/on",          "OFF",                           retain=True)
+        _mqtt.publish("cell/output_percent", 0,                            retain=True)
+        _mqtt.publish("events/cell_trip", json.dumps({
             "reason":     reason,
             "pump_speed": pump_speed,
             "flow_ok":    flow_ok,
@@ -295,9 +298,9 @@ async def _do_polarity_toggle() -> None:
     state.save({"polarity_direction": new_polarity})
     _verify_polarity_after_switch(new_polarity, bool(sensors.read_flow()))
     if _mqtt:
-        _mqtt.publish("cell/polarity", new_polarity, retain=True)
-        _mqtt.publish("cell/state",
-                      "ON" if cell.get_cell_state() else "OFF", retain=True)
+        _mqtt.publish("cell/polarity_direction", new_polarity,                                retain=True)
+        _mqtt.publish("cell/gate_state",         "ON" if cell.get_cell_state() else "OFF",    retain=True)
+        _mqtt.publish("cell/on",                 "ON" if _cell_requested else "OFF",          retain=True)
 
 
 async def _auto_polarity_reverse() -> None:
@@ -315,10 +318,10 @@ async def _auto_polarity_reverse() -> None:
         config.CELL_POLARITY_REVERSE_INTERVAL_S, old_polarity, new_polarity,
     )
     if _mqtt:
-        _mqtt.publish("cell/polarity", new_polarity, retain=True)
-        _mqtt.publish("cell/state",
-                      "ON" if cell.get_cell_state() else "OFF", retain=True)
-        _mqtt.publish("cell/polarity_on_time_s", 0)
+        _mqtt.publish("cell/polarity_direction",  new_polarity,                              retain=True)
+        _mqtt.publish("cell/gate_state",          "ON" if cell.get_cell_state() else "OFF",  retain=True)
+        _mqtt.publish("cell/on",                  "ON" if _cell_requested else "OFF",        retain=True)
+        _mqtt.publish("cell/polarity_accumulator", 0)
 
 
 def handle_polarity_toggle() -> None:
@@ -349,15 +352,15 @@ def handle_output_set(pct: int) -> None:
     _cell_output_percent = pct
     state.save({"cell_output_percent": pct})
     if _mqtt:
-        _mqtt.publish("cell/output", _effective_cell_output(), retain=True)
+        _mqtt.publish("cell/output_percent", _effective_cell_output(), retain=True)
 
 
 def _publish_super_chlorinate_state() -> None:
     if not _mqtt:
         return
-    _mqtt.publish("cell/super_chlorinate", "ON" if _super_chlorinate_active else "OFF", retain=True)
+    _mqtt.publish("sc/active",    "ON" if _super_chlorinate_active else "OFF", retain=True)
     remaining = max(0, int(_super_chlorinate_remaining_s)) if _super_chlorinate_active else 0
-    _mqtt.publish("cell/super_chlorinate_remaining_s", remaining, retain=True)
+    _mqtt.publish("sc/remaining", remaining, retain=True)
 
 
 def _publish_system_mode() -> None:
@@ -370,8 +373,8 @@ def _publish_system_mode() -> None:
         mode = "on"
     else:
         mode = "off"
-    _mqtt.publish("system/mode",         mode,                               retain=True)
-    _mqtt.publish("system/service_mode", "ON" if _service_mode else "OFF",  retain=True)
+    _mqtt.publish("system/mode",  mode,                               retain=True)
+    _mqtt.publish("service_mode", "ON" if _service_mode else "OFF",  retain=True)
 
 
 def _publish_power_recovery(resumed_mode: str, outage_s: int) -> None:
@@ -395,7 +398,7 @@ def _cancel_super_chlorinate(reason: str) -> None:
     logger.info("Super chlorinate cleared: %s", reason)
     _publish_super_chlorinate_state()
     if _mqtt:
-        _mqtt.publish("cell/output", _effective_cell_output(), retain=True)
+        _mqtt.publish("cell/output_percent", _effective_cell_output(), retain=True)
 
 
 def handle_super_chlorinate_set(on: bool) -> None:
@@ -409,7 +412,7 @@ def handle_super_chlorinate_set(on: bool) -> None:
             logger.warning("SC rejected: boot grace (%ds remaining)", int(remaining))
             if _mqtt:
                 _mqtt.publish("cell/cant_enable_reason", f"boot_grace:{int(remaining)}s", retain=True)
-                _mqtt.publish("cell/boot_grace_remaining_s", int(remaining))
+                _mqtt.publish("cell/countdown", int(remaining))
             _publish_notification("error", f"Super Chlorinate rejected: boot grace ({int(remaining)}s remaining)")
             return
     if on and _fault_state is not None:
@@ -546,8 +549,8 @@ async def pump_keepalive_loop(shutdown: asyncio.Event) -> None:
             # Publish pump_stable on change (SPEC §2.11)
             stable = pump.is_stable()
             if stable != _last_stable:
-                _mqtt.publish("pump/stable", "ON" if stable else "OFF", retain=True)
-                _mqtt.publish("pump/stable_countdown_s", pump.get_stable_countdown_s())
+                _mqtt.publish("pump/stable",    "ON" if stable else "OFF",      retain=True)
+                _mqtt.publish("pump/countdown", pump.get_stable_countdown_s())
                 _last_stable = stable
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=config.PUMP_KEEPALIVE_S)
@@ -632,8 +635,8 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
             _polarity_persist_ticks = 0
 
         if _mqtt:
-            _mqtt.publish("cell/state",     "ON" if actually_on else "OFF",          retain=True)
-            _mqtt.publish("cell/interlock", "ON" if safety.is_interlock_ok() else "OFF")
+            _mqtt.publish("cell/gate_state", "ON" if actually_on else "OFF",          retain=True)
+            _mqtt.publish("cell/interlock",  "ON" if safety.is_interlock_ok() else "OFF")
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=1.0)
         except asyncio.TimeoutError:
@@ -683,11 +686,11 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
             if air_t_f is not None:
                 _mqtt.publish("sensors/air_temp",     air_t_f)
             if current is not None:
-                _mqtt.publish("sensors/cell_current", current)
+                _mqtt.publish("cell/current_amps",    current)
             if pump_current is not None:
                 _mqtt.publish("sensors/pump_current", pump_current)
             if ec is not None:
-                _mqtt.publish("sensors/conductivity", ec)
+                _mqtt.publish("sensors/ec",           ec)
             _mqtt.publish("sensors/flow", "ON" if flow else "OFF")
             _mqtt.publish("fans/state",  "ON" if fan_on else "OFF", retain=True)
 
@@ -848,24 +851,26 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _corrupt_notified = True
 
         if _mqtt and _mqtt.is_connected():
-            _mqtt.publish("pump/power_on", "ON" if _pump_power_on else "OFF",         retain=True)
-            _mqtt.publish("pump/speed",    pump.get_target_speed(),                    retain=True)
-            _mqtt.publish("pump/running",  "ON" if pump.get_speed() > 0 else "OFF",   retain=True)
-            _mqtt.publish("pump/preload_active", "ON" if pump.is_preloading() else "OFF", retain=True)
-            _mqtt.publish("cell/polarity", cell.get_polarity(),         retain=True)
+            _mqtt.publish("pump/state",          "ON" if _pump_power_on else "OFF",         retain=True)
+            _mqtt.publish("pump/output_percent", pump.get_target_speed(),                    retain=True)
+            _mqtt.publish("pump/running",        "ON" if pump.get_speed() > 0 else "OFF",   retain=True)
+            _mqtt.publish("pump/preload_active", "ON" if pump.is_preloading() else "OFF",   retain=True)
+            _mqtt.publish("cell/on",             "ON" if _cell_requested else "OFF",        retain=True)
+            _mqtt.publish("cell/gate_state",     "ON" if cell.get_cell_state() else "OFF",  retain=True)
+            _mqtt.publish("cell/polarity_direction", cell.get_polarity(),                   retain=True)
             accumulated = round(_polarity_on_time_s)
             remaining = max(0, round(config.CELL_POLARITY_REVERSE_INTERVAL_S - _polarity_on_time_s))
             def _fmt_hm(s: int) -> str:
                 h, m = divmod(s // 60, 60)
                 return f"{h}:{m:02d}"
-            _mqtt.publish("cell/polarity_on_time_s",    accumulated)
+            _mqtt.publish("cell/polarity_accumulator",  accumulated)
             _mqtt.publish("cell/polarity_accumulated_s", _fmt_hm(accumulated))
             _mqtt.publish("cell/polarity_remaining_s",   _fmt_hm(remaining))
-            _mqtt.publish("cell/output", _effective_cell_output(), retain=True)
-            _mqtt.publish("cell/actual_duty",            _actual_duty.actual_duty_pct(),  retain=True)
-            _mqtt.publish("cell/actual_duty_confidence", _actual_duty.confidence_pct(),   retain=True)
+            _mqtt.publish("cell/output_percent",     _effective_cell_output(),              retain=True)
+            _mqtt.publish("cell/runtime_percent",    _actual_duty.actual_duty_pct(),        retain=True)
+            _mqtt.publish("cell/actual_duty_confidence", _actual_duty.confidence_pct(),     retain=True)
             _publish_super_chlorinate_state()
-            _mqtt.publish("system/service_mode", "ON" if _service_mode else "OFF", retain=True)
+            _mqtt.publish("service_mode", "ON" if _service_mode else "OFF", retain=True)
             _mqtt.publish("system/mode",
                           "service" if _service_mode else ("on" if _pump_power_on else "off"),
                           retain=True)
@@ -874,9 +879,8 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             pump_grace = max(0, int(_BOOT_PUMP_GRACE_S - elapsed))
             cell_grace = max(0, int(_BOOT_CELL_GRACE_S - elapsed))
             _mqtt.publish("pump/boot_grace_remaining_s", pump_grace)
-            _mqtt.publish("cell/boot_grace_remaining_s", cell_grace)
-            # pump_stable countdown (SPEC §3.6)
-            _mqtt.publish("pump/stable_countdown_s", pump.get_stable_countdown_s())
+            _mqtt.publish("cell/countdown",              cell_grace)
+            _mqtt.publish("pump/countdown",              pump.get_stable_countdown_s())
         state.save({
             "polarity_on_time_accumulator": round(_polarity_on_time_s, 1),
             "super_chlorinate_remaining": round(_super_chlorinate_remaining_s, 1),
@@ -897,12 +901,12 @@ async def system_health_loop(shutdown: asyncio.Event) -> None:
     while not shutdown.is_set():
         health = await loop.run_in_executor(None, _collect_system_health)
         if _mqtt and _mqtt.is_connected():
-            _mqtt.publish("system/cpu_percent",    health["cpu_percent"])
-            _mqtt.publish("system/memory_percent", health["memory_percent"])
-            _mqtt.publish("system/disk_percent",   health["disk_percent"])
-            _mqtt.publish("system/uptime_seconds", health["uptime_seconds"])
+            _mqtt.publish("system/cpu",    health["cpu_percent"])
+            _mqtt.publish("system/memory", health["memory_percent"])
+            _mqtt.publish("system/disk",   health["disk_percent"])
+            _mqtt.publish("system/uptime", health["uptime_seconds"])
             if health["cpu_temp"] is not None:
-                _mqtt.publish("system/cpu_temp",   health["cpu_temp"])
+                _mqtt.publish("system/temp",        health["cpu_temp"])
             if health["wifi_signal"] is not None:
                 _mqtt.publish("system/wifi_signal", health["wifi_signal"])
         try:
@@ -971,9 +975,9 @@ async def power_recovery_task(shutdown: asyncio.Event) -> None:
         _cell_requested = True
         state.save({"pump_on": True, "pump_output_percent": resume_speed, "cell_on": True})
         if _mqtt:
-            _mqtt.publish("pump/power_on", "ON",                                    retain=True)
-            _mqtt.publish("pump/speed",    pump.get_target_speed(),                  retain=True)
-            _mqtt.publish("pump/running",  "ON" if pump.get_speed() > 0 else "OFF", retain=True)
+            _mqtt.publish("pump/state",          "ON",                                    retain=True)
+            _mqtt.publish("pump/output_percent", pump.get_target_speed(),                  retain=True)
+            _mqtt.publish("pump/running",        "ON" if pump.get_speed() > 0 else "OFF", retain=True)
         _publish_power_recovery("super_chlorinate", outage_s)
 
     elif snap.get("super_chlorinate_active") and _super_chlorinate_remaining_s <= 0:
@@ -990,9 +994,9 @@ async def power_recovery_task(shutdown: asyncio.Event) -> None:
             _pump_power_on = True
             state.save({"pump_on": True, "pump_output_percent": saved_speed})
             if _mqtt:
-                _mqtt.publish("pump/power_on", "ON",                                    retain=True)
-                _mqtt.publish("pump/speed",    pump.get_target_speed(),                  retain=True)
-                _mqtt.publish("pump/running",  "ON" if pump.get_speed() > 0 else "OFF", retain=True)
+                _mqtt.publish("pump/state",          "ON",                                    retain=True)
+                _mqtt.publish("pump/output_percent", pump.get_target_speed(),                  retain=True)
+                _mqtt.publish("pump/running",        "ON" if pump.get_speed() > 0 else "OFF", retain=True)
         if snap.get("cell_on"):
             _cell_requested = True
             state.save({"cell_on": True})

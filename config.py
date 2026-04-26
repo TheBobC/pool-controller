@@ -12,7 +12,10 @@ MQTT_HOST = os.getenv("MQTT_HOST", "10.0.0.16")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USER = os.getenv("MQTT_USER", "")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
-TOPIC_PREFIX = os.getenv("MQTT_TOPIC_PREFIX", "jarvis/pool/TudorPool")
+TOPIC_PREFIX = os.getenv("MQTT_TOPIC_PREFIX", "pool")
+# Set MQTT_BRIDGE_OLD_PREFIX to the old prefix during the 24-hour dual-publish window.
+# Leave empty (default) once HA has been fully updated to the new prefix.
+MQTT_BRIDGE_OLD_PREFIX = os.getenv("MQTT_BRIDGE_OLD_PREFIX", "")
 HA_DISCOVERY_PREFIX = os.getenv("HA_DISCOVERY_PREFIX", "homeassistant")
 
 # ---------------------------------------------------------------------------
