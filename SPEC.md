@@ -6,7 +6,7 @@ This document is the single source of truth for sat4 (Jarvis Pool Controller) be
 
 ## Section 1 — Boot / Service Startup
 
-1. Service is not enabled at boot. Started manually via systemd.
+1. Service is enabled at boot via systemd (`WantedBy=multi-user.target`). Starts automatically on system power-up. Manual start/stop via `systemctl` remains available.
 2. On startup, load `state.json` and restore: polarity direction, polarity on-time accumulator, any other persisted state per Section 9.
 3. Initialize hardware: SC16IS752 RS-485, GeeekPi relay HAT (I2C 0x10), ADS1115 (I2C 0x48), EZO-EC on `/dev/serial0`.
 4. All relays start de-energized. Cell gate (CH1) off. Pump off. Polarity (CH2) set to restored direction from state.json.
