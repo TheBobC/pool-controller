@@ -61,7 +61,7 @@ FAN_TEMP_THRESHOLD = float(os.getenv("FAN_TEMP_THRESHOLD", "90.0"))
 ADS_I2C_ADDR    = int(os.getenv("ADS_I2C_ADDR", "0x48"), 16)
 ADS_CH_POLARITY    = 0   # AIN0 — salt cell polarity verify (voltage divider)
 ADS_CH_AIR_TEMP    = 1   # AIN1 — air temp thermistor
-ADS_CH_WATER_TEMP  = 2   # AIN2 — water temp thermistor (not connected)
+ADS_CH_WATER_TEMP  = 2   # AIN2 — water temp thermistor
 ADS_CH_CURRENT     = 3   # AIN3 — ACS712 30A current sensor
 ADS_VCC = float(os.getenv("ADS_VCC", "3.3"))
 

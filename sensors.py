@@ -4,7 +4,7 @@ sensors.py — All sensor reads.  Every hardware path is non-fatal.
 ADS1115 (I2C 0x48):
   AIN0 → salt cell polarity verify    (voltage divider, read-only)
   AIN1 → air  temperature thermistor  (10kΩ NTC, B=3950)
-  AIN2 → water temperature thermistor (10kΩ NTC, B=3950) — NOT CONNECTED
+  AIN2 → water temperature thermistor (10kΩ NTC, B=3950)
   AIN3 → ACS712 30A current sensor    (66 mV/A, zero = 2.5 V)
 
 Thermistor voltage-divider: VCC → R_REF(10kΩ) → AINx → Thermistor → GND
