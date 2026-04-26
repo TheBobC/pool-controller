@@ -127,6 +127,20 @@ def handle_pump_power_set(on: bool) -> None:
             _mqtt.publish("pump/running",  "OFF", retain=True)
 
 
+def _effective_cell_output() -> int:
+    """Compute the published/displayed cell_output_percent per SPEC §3.7.
+
+    If any trip condition is active → 0.
+    If SC active → 100.
+    Otherwise → stored _cell_output_percent (user/schedule set value).
+    """
+    if not _cell_requested or _fault_state is not None or not _interlocks_ok:
+        return 0
+    if _super_chlorinate_active:
+        return 100
+    return _cell_output_percent
+
+
 def _publish_notification(severity: str, message: str) -> None:
     """Publish a human-readable notification to the notifications topic."""
     if _mqtt:
@@ -308,7 +322,7 @@ def handle_output_set(pct: int) -> None:
     _cell_output_percent = pct
     state.save({"cell_output_percent": pct})
     if _mqtt:
-        _mqtt.publish("cell/output", 100 if _super_chlorinate_active else pct, retain=True)
+        _mqtt.publish("cell/output", _effective_cell_output(), retain=True)
 
 
 def _publish_super_chlorinate_state() -> None:
@@ -354,7 +368,7 @@ def _cancel_super_chlorinate(reason: str) -> None:
     logger.info("Super chlorinate cleared: %s", reason)
     _publish_super_chlorinate_state()
     if _mqtt:
-        _mqtt.publish("cell/output", _cell_output_percent, retain=True)
+        _mqtt.publish("cell/output", _effective_cell_output(), retain=True)
 
 
 def handle_super_chlorinate_set(on: bool) -> None:
@@ -666,10 +680,7 @@ async def cell_duty_cycle_loop(shutdown: asyncio.Event) -> None:
     while not shutdown.is_set():
         now = time.monotonic()
 
-        if _service_mode:
-            effective_pct = _cell_output_percent
-        else:
-            effective_pct = 100 if _super_chlorinate_active else _cell_output_percent
+        effective_pct = _effective_cell_output()  # SPEC §3.7 single source of truth
 
         if not _interlocks_ok:
             # Safety has already killed the gate.  Close out gate accumulator.
@@ -795,7 +806,7 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _mqtt.publish("cell/polarity_on_time_s",    accumulated)
             _mqtt.publish("cell/polarity_accumulated_s", _fmt_hm(accumulated))
             _mqtt.publish("cell/polarity_remaining_s",   _fmt_hm(remaining))
-            _mqtt.publish("cell/output", 100 if _super_chlorinate_active else _cell_output_percent, retain=True)
+            _mqtt.publish("cell/output", _effective_cell_output(), retain=True)
             _mqtt.publish("cell/actual_duty",            _actual_duty.actual_duty_pct(),  retain=True)
             _mqtt.publish("cell/actual_duty_confidence", _actual_duty.confidence_pct(),   retain=True)
             _publish_super_chlorinate_state()

@@ -13,7 +13,7 @@ import time
 
 
 class ActualDutyTracker:
-    WINDOW_S = 86400         # 24-hour rolling window
+    WINDOW_S = 1800          # 30-minute rolling window (SPEC §3.11)
     CURRENT_THRESHOLD_A = 1.0
 
     def __init__(self) -> None:

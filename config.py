@@ -100,7 +100,7 @@ CELL_FLOW_DELAY_S   = 60.0   # Continuous flow + pump required before cell on
 PUMP_STABLE_POST_PRIME_S = 30.0  # Seconds past prime end before pump_stable = True (SPEC §2.11)
 CELL_POLARITY_REVERSE_INTERVAL_S = float(os.getenv("CELL_POLARITY_REVERSE_INTERVAL_S", "7200"))  # 2 h
 SUPER_CHLORINATE_DURATION_S = float(os.getenv("SUPER_CHLORINATE_DURATION_S", "86400"))  # 24 h
-CELL_DUTY_WINDOW_S  = float(os.getenv("CELL_DUTY_WINDOW_S", "600"))   # 10-minute duty cycle window
+CELL_DUTY_WINDOW_S  = float(os.getenv("CELL_DUTY_WINDOW_S", "900"))   # 15-minute duty cycle window (SPEC §3.8)
 _cell_output_default_env = os.getenv("CELL_OUTPUT_DEFAULT")
 CELL_OUTPUT_DEFAULT: int | None = int(_cell_output_default_env) if _cell_output_default_env is not None else None
 
