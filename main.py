@@ -956,12 +956,13 @@ async def system_health_loop(shutdown: asyncio.Event) -> None:
 
 
 async def fast_sensor_loop(shutdown: asyncio.Event) -> None:
-    """Publish 15-second group: cell/current_amps, cell/polarity_direction (SPEC §10.4)."""
+    """Publish 15-second group: cell/current_amps, cell/gate_state, cell/polarity_direction (SPEC §10.4)."""
     while not shutdown.is_set():
         if _mqtt and _mqtt.is_connected():
             if _last_current_a is not None:
                 _mqtt.publish("cell/current_amps", _last_current_a)
-            _mqtt.publish("cell/polarity_direction", cell.get_polarity(), retain=True)
+            _mqtt.publish("cell/gate_state",         "ON" if cell.get_cell_state() else "OFF", retain=True)
+            _mqtt.publish("cell/polarity_direction", cell.get_polarity(),                       retain=True)
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=15.0)
         except asyncio.TimeoutError:
