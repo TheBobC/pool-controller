@@ -431,6 +431,7 @@ class MQTTClient:
         self._on_super_chlorinate_set: Optional[Callable[[bool], None]] = None
         self._on_output_set: Optional[Callable[[int], None]] = None
         self._on_service_mode_set: Optional[Callable[[bool], None]] = None
+        self._on_fault_reset: Optional[Callable[[], None]] = None
 
         self._client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
@@ -461,6 +462,7 @@ class MQTTClient:
         client.subscribe(f"{T}/cell/super_chlorinate/set")
         client.subscribe(f"{T}/cell/output/set")
         client.subscribe(f"{T}/system/service_mode/set")
+        client.subscribe(f"{T}/fault/reset")
         client.publish(f"{T}/system/status", "online", qos=1, retain=True)
         self._publish_discovery(client)
 
@@ -535,6 +537,9 @@ class MQTTClient:
     def register_service_mode_handler(self, fn: Callable[[bool], None]) -> None:
         self._on_service_mode_set = fn
 
+    def register_fault_reset_handler(self, fn: Callable[[], None]) -> None:
+        self._on_fault_reset = fn
+
     async def message_loop(self) -> None:
         """Dispatch inbound commands.  Run as an asyncio task."""
         try:
@@ -579,5 +584,9 @@ class MQTTClient:
                 elif topic == f"{T}/system/service_mode/set":
                     if self._on_service_mode_set:
                         self._on_service_mode_set(payload.upper() == "ON")
+
+                elif topic == f"{T}/fault/reset":
+                    if self._on_fault_reset:
+                        self._on_fault_reset()
         except asyncio.CancelledError:
             pass

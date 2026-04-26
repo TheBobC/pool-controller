@@ -188,6 +188,20 @@ def handle_cell_trip(reason: str, pump_speed: int, flow_ok: bool) -> None:
         }))
 
 
+def handle_fault_reset() -> None:
+    global _fault_state
+    if _fault_state is None:
+        logger.info("← fault/reset: no fault latched — ignored")
+        return
+    logger.info("← fault/reset: clearing latched fault '%s'", _fault_state)
+    _fault_state = None
+    state.save({"fault_state": None})
+    if _mqtt:
+        _mqtt.publish("fault/state", "none", retain=True)
+        _mqtt.publish("cell/cant_enable_reason", "", retain=True)
+    logger.info("Fault cleared — user must re-enable cell manually (SPEC §7.10)")
+
+
 async def _do_polarity_toggle() -> None:
     loop = asyncio.get_running_loop()
     # Blocks ~2 * POLARITY_SWITCH_DELAY_S — run in executor
@@ -842,6 +856,7 @@ async def main() -> None:
     _mqtt.register_super_chlorinate_handler(handle_super_chlorinate_set)
     _mqtt.register_output_handler(handle_output_set)
     _mqtt.register_service_mode_handler(handle_service_mode_set)
+    _mqtt.register_fault_reset_handler(handle_fault_reset)
     _mqtt.connect()
     safety.register_trip_handler(handle_cell_trip)
 
