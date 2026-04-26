@@ -94,7 +94,8 @@ CELL_FLOW_DELAY_S   = 60.0   # Continuous flow + pump required before cell on
 CELL_POLARITY_REVERSE_INTERVAL_S = float(os.getenv("CELL_POLARITY_REVERSE_INTERVAL_S", "7200"))  # 2 h
 SUPER_CHLORINATE_DURATION_S = float(os.getenv("SUPER_CHLORINATE_DURATION_S", "86400"))  # 24 h
 CELL_DUTY_WINDOW_S  = float(os.getenv("CELL_DUTY_WINDOW_S", "600"))   # 10-minute duty cycle window
-CELL_OUTPUT_DEFAULT = int(os.getenv("CELL_OUTPUT_DEFAULT", "0"))       # Boot default; 0 = must explicitly set
+_cell_output_default_env = os.getenv("CELL_OUTPUT_DEFAULT")
+CELL_OUTPUT_DEFAULT: int | None = int(_cell_output_default_env) if _cell_output_default_env is not None else None
 
 # Power recovery and service mode
 POWER_RECOVERY_GRACE_S      = float(os.getenv("POWER_RECOVERY_GRACE_S",      "120"))  # seconds to wait before auto-resume after restart

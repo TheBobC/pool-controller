@@ -129,8 +129,18 @@ def handle_pump_power_set(on: bool) -> None:
 def handle_cell_set(on: bool) -> None:
     global _cell_requested
     logger.info("← cell/set: %s", "ON" if on else "OFF")
+    if on and _cell_output_percent == 0:
+        if _super_chlorinate_active:
+            handle_output_set(100)
+        else:
+            logger.warning("Cell enable refused: output_percent is 0 — send cell/output/set first")
+            if _mqtt:
+                _mqtt.publish("cell/cant_enable_reason", "output_percent_not_set", retain=True)
+            return
     if on and not _cell_requested:
         _actual_duty.reset()
+    if on and _mqtt:
+        _mqtt.publish("cell/cant_enable_reason", "", retain=True)
     # Service mode pre-flight: pump must be ≥ SERVICE_CELL_MIN_PUMP_SPEED before cell can run
     if on and _service_mode and pump.get_speed() < config.SERVICE_CELL_MIN_PUMP_SPEED:
         logger.info(
@@ -775,7 +785,8 @@ async def main() -> None:
         _super_chlorinate_remaining_s = max(0.0, float(saved["super_chlorinate_expires_at"]) - time.time())
     else:
         _super_chlorinate_remaining_s = 0.0
-    _cell_output_percent = int(saved.get("cell_output_percent", config.CELL_OUTPUT_DEFAULT))
+    _raw_output = saved.get("cell_output_percent", config.CELL_OUTPUT_DEFAULT)
+    _cell_output_percent = int(_raw_output) if _raw_output is not None else 0
     # Clear super chlorinate if it already ran out
     if _super_chlorinate_active and _super_chlorinate_remaining_s <= 0:
         _super_chlorinate_active = False
