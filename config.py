@@ -47,7 +47,7 @@ FAN_RELAY_CH           = int(os.getenv("FAN_RELAY_CH",           "3"))  # 1-base
 ACS712_POWER_CHANNEL   = int(os.getenv("ACS712_POWER_CHANNEL",   "4"))  # 1-based
 
 # Polarity switching — MUST NOT run while gate is energised
-POLARITY_SWITCH_DELAY_S = float(os.getenv("POLARITY_SWITCH_DELAY_S", "3.0"))
+POLARITY_SWITCH_DELAY_S = float(os.getenv("POLARITY_SWITCH_DELAY_S", "10.0"))  # SPEC §7.6 step 2
 
 # Enclosure fans — on if cell is active OR air temp exceeds threshold (°F)
 FAN_TEMP_THRESHOLD = float(os.getenv("FAN_TEMP_THRESHOLD", "90.0"))
