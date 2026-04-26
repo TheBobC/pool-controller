@@ -127,6 +127,15 @@ def handle_pump_power_set(on: bool) -> None:
             _mqtt.publish("pump/running",  "OFF", retain=True)
 
 
+def _publish_notification(severity: str, message: str) -> None:
+    """Publish a human-readable notification to the notifications topic."""
+    if _mqtt:
+        _mqtt.publish("system/notifications", json.dumps({
+            "severity": severity,
+            "message":  message,
+        }))
+
+
 def handle_cell_set(on: bool) -> None:
     global _cell_requested
     logger.info("← cell/set: %s", "ON" if on else "OFF")
@@ -134,7 +143,23 @@ def handle_cell_set(on: bool) -> None:
         logger.warning("Cell enable refused: fault latched (%s) — reset fault first", _fault_state)
         if _mqtt:
             _mqtt.publish("cell/cant_enable_reason", f"fault_latched:{_fault_state}", retain=True)
+        _publish_notification("error", f"Cell enable rejected: fault latched ({_fault_state}) — reset fault first")
         return
+    # SPEC §3.4 rejection gates
+    if on:
+        flow = sensors.read_flow()
+        if not flow:
+            logger.warning("Cell enable refused: no flow detected")
+            if _mqtt:
+                _mqtt.publish("cell/cant_enable_reason", "no_flow", retain=True)
+            _publish_notification("error", "Cell enable rejected: no flow detected")
+            return
+        if pump.get_speed() < config.CELL_PUMP_MIN_SPEED:
+            logger.warning("Cell enable refused: pump not running (speed=%d%%)", pump.get_speed())
+            if _mqtt:
+                _mqtt.publish("cell/cant_enable_reason", "pump_not_running", retain=True)
+            _publish_notification("error", f"Cell enable rejected: pump not running ({pump.get_speed()}%)")
+            return
     if on and _cell_output_percent == 0:
         if _super_chlorinate_active:
             handle_output_set(100)
@@ -316,7 +341,23 @@ def handle_super_chlorinate_set(on: bool) -> None:
         logger.warning("SC refused: fault latched (%s) — reset fault first", _fault_state)
         if _mqtt:
             _mqtt.publish("cell/cant_enable_reason", f"fault_latched:{_fault_state}", retain=True)
+        _publish_notification("error", f"Super Chlorinate rejected: fault latched ({_fault_state}) — reset fault first")
         return
+    # SPEC §4.8 rejection gates (same as §3.4)
+    if on:
+        flow = sensors.read_flow()
+        if not flow:
+            logger.warning("SC refused: no flow detected")
+            if _mqtt:
+                _mqtt.publish("cell/cant_enable_reason", "no_flow", retain=True)
+            _publish_notification("error", "Super Chlorinate rejected: no flow detected")
+            return
+        if pump.get_speed() < config.CELL_PUMP_MIN_SPEED:
+            logger.warning("SC refused: pump not running (speed=%d%%)", pump.get_speed())
+            if _mqtt:
+                _mqtt.publish("cell/cant_enable_reason", "pump_not_running", retain=True)
+            _publish_notification("error", f"Super Chlorinate rejected: pump not running ({pump.get_speed()}%)")
+            return
     if on:
         is_fresh = not _super_chlorinate_active
         if is_fresh:
