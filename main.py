@@ -276,31 +276,37 @@ def handle_fault_reset() -> None:
     logger.info("Fault cleared — user must re-enable cell manually (SPEC §7.10)")
 
 
-def _verify_polarity_after_switch(new_polarity: str, flow_ok: bool) -> None:
-    """Check AIN0 polarity verify after a switch.  Trips fault if thresholds configured and mismatch."""
-    if not (config.POLARITY_FORWARD_MAX_V > 0 and config.POLARITY_REVERSE_MIN_V > 0):
-        return  # thresholds not calibrated — skip verify
-    pol_v = sensors.read_polarity_voltage()
-    if pol_v is None:
-        return  # ADS1115 unavailable — skip verify
-    mismatch = (
-        (new_polarity == "forward" and pol_v > config.POLARITY_FORWARD_MAX_V)
-        or (new_polarity == "reverse" and pol_v < config.POLARITY_REVERSE_MIN_V)
-    )
-    if mismatch:
-        logger.error(
-            "Post-switch polarity mismatch: expected=%s AIN0=%.3fV — latching fault",
-            new_polarity, pol_v,
-        )
-        handle_cell_trip("polarity_mismatch", pump.get_speed(), flow_ok)
-
-
 async def _do_polarity_toggle() -> None:
     loop = asyncio.get_running_loop()
     # Blocks 2 * POLARITY_SWITCH_DELAY_S (10s each = 20s total per SPEC §7.6)
-    new_polarity = await loop.run_in_executor(None, cell.toggle_polarity)
+    _verify_mismatch: list = []
+
+    def _pre_regate(new_pol: str) -> bool:
+        """SPEC §7.6 step 4: verify AIN0 before gate re-energization."""
+        if not (config.POLARITY_FORWARD_MAX_V > 0 and config.POLARITY_REVERSE_MIN_V > 0):
+            return True  # thresholds not calibrated — skip, allow gate-on
+        pol_v = sensors.read_polarity_voltage()
+        if pol_v is None:
+            return True  # ADS1115 unavailable — skip, allow gate-on
+        mismatch = (
+            (new_pol == "forward" and pol_v > config.POLARITY_FORWARD_MAX_V)
+            or (new_pol == "reverse" and pol_v < config.POLARITY_REVERSE_MIN_V)
+        )
+        if mismatch:
+            _verify_mismatch.append((new_pol, pol_v))
+        return not mismatch
+
+    new_polarity = await loop.run_in_executor(
+        None, lambda: cell.toggle_polarity(pre_regate_fn=_pre_regate)
+    )
     state.save({"polarity_direction": new_polarity})
-    _verify_polarity_after_switch(new_polarity, bool(sensors.read_flow()))
+    if _verify_mismatch:
+        new_pol, pol_v = _verify_mismatch[0]
+        logger.error(
+            "Post-switch polarity mismatch: expected=%s AIN0=%.3fV — latching fault",
+            new_pol, pol_v,
+        )
+        handle_cell_trip("polarity_mismatch", pump.get_speed(), bool(sensors.read_flow()))
     if _mqtt:
         _mqtt.publish("cell/polarity_direction", new_polarity,                                retain=True)
         _mqtt.publish("cell/gate_state",         "ON" if cell.get_cell_state() else "OFF",    retain=True)
@@ -312,11 +318,36 @@ async def _auto_polarity_reverse() -> None:
     global _polarity_on_time_s, _polarity_reversing
     loop = asyncio.get_running_loop()
     old_polarity = cell.get_polarity()
-    new_polarity = await loop.run_in_executor(None, cell.toggle_polarity)
+    _verify_mismatch: list = []
+
+    def _pre_regate(new_pol: str) -> bool:
+        """SPEC §7.6 step 4: verify AIN0 before gate re-energization."""
+        if not (config.POLARITY_FORWARD_MAX_V > 0 and config.POLARITY_REVERSE_MIN_V > 0):
+            return True
+        pol_v = sensors.read_polarity_voltage()
+        if pol_v is None:
+            return True
+        mismatch = (
+            (new_pol == "forward" and pol_v > config.POLARITY_FORWARD_MAX_V)
+            or (new_pol == "reverse" and pol_v < config.POLARITY_REVERSE_MIN_V)
+        )
+        if mismatch:
+            _verify_mismatch.append((new_pol, pol_v))
+        return not mismatch
+
+    new_polarity = await loop.run_in_executor(
+        None, lambda: cell.toggle_polarity(pre_regate_fn=_pre_regate)
+    )
     _polarity_on_time_s = 0.0
     state.save({"polarity_on_time_accumulator": 0.0, "polarity_direction": new_polarity})
     _polarity_reversing = False
-    _verify_polarity_after_switch(new_polarity, bool(sensors.read_flow()))
+    if _verify_mismatch:
+        new_pol, pol_v = _verify_mismatch[0]
+        logger.error(
+            "Auto-reverse polarity mismatch: expected=%s AIN0=%.3fV — latching fault",
+            new_pol, pol_v,
+        )
+        handle_cell_trip("polarity_mismatch", pump.get_speed(), bool(sensors.read_flow()))
     logger.info(
         "Polarity auto-reverse after %.0f s accumulated on-time: %s → %s",
         config.CELL_POLARITY_REVERSE_INTERVAL_S, old_polarity, new_polarity,

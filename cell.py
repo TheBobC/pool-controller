@@ -190,10 +190,15 @@ def restore_polarity_at_boot(polarity: str) -> None:
         logger.info("Boot polarity restore (no hardware): direction set to %s", _polarity)
 
 
-def set_polarity(polarity: str) -> str:
+def set_polarity(polarity: str, pre_regate_fn=None) -> str:
     """Switch to the requested polarity ('forward'|'reverse') using the
     mandated gate-cut / CH2-toggle / gate-restore sequence.  Returns the
-    polarity in effect after the call."""
+    polarity in effect after the call.
+
+    pre_regate_fn: optional callable(new_polarity: str) -> bool, called after
+        CH2 toggles but BEFORE gate re-energization (SPEC §7.6 step 4).
+        Return False to skip gate-on; caller is responsible for tripping fault.
+    """
     global _polarity, _cell_on, _switching
     if polarity not in ("forward", "reverse"):
         logger.warning("Bad polarity: %r", polarity)
@@ -204,9 +209,6 @@ def set_polarity(polarity: str) -> str:
     was_on = _cell_on
     _switching = True
     try:
-        # Phase 2 safety: pre-switch current must reach zero before polarity change;
-        # post-switch current must return within 2 s; verify ADS1115 A2 afterwards.
-
         # 1. de-energise gate (CH1 OFF)
         _cell_on = False
         try:
@@ -230,16 +232,21 @@ def set_polarity(polarity: str) -> str:
         # 4. wait
         time.sleep(config.POLARITY_SWITCH_DELAY_S)
 
-        # Phase 2 safety: verify ADS1115 A2 polarity-sense matches _polarity here.
+        # SPEC §7.6 step 4: verify AIN0 reading matches commanded direction
+        # BEFORE re-energizing gate; if verify fails, gate stays off.
+        verify_ok = pre_regate_fn(_polarity) if pre_regate_fn is not None else True
 
-        # 5. re-energise gate if cell was on before the switch
+        # 5. re-energise gate only if cell was on before the switch AND verify passed
         if was_on:
-            try:
-                _set_gate(True)
-                _cell_on = True
-                logger.info("Polarity switch: gate ON (polarity=%s)", _polarity)
-            except Exception as exc:
-                logger.warning("Polarity switch: gate-on failed: %s", exc)
+            if verify_ok:
+                try:
+                    _set_gate(True)
+                    _cell_on = True
+                    logger.info("Polarity switch: gate ON (polarity=%s)", _polarity)
+                except Exception as exc:
+                    logger.warning("Polarity switch: gate-on failed: %s", exc)
+            else:
+                logger.warning("Polarity switch: verify failed — gate left OFF (polarity=%s)", _polarity)
         else:
             logger.info("Polarity switch: cell was off, leaving gate OFF (polarity=%s)",
                         _polarity)
@@ -249,8 +256,8 @@ def set_polarity(polarity: str) -> str:
     return _polarity
 
 
-def toggle_polarity() -> str:
-    return set_polarity("reverse" if _polarity == "forward" else "forward")
+def toggle_polarity(pre_regate_fn=None) -> str:
+    return set_polarity("reverse" if _polarity == "forward" else "forward", pre_regate_fn=pre_regate_fn)
 
 
 def set_acs712_power(on: bool) -> bool:
