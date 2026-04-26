@@ -89,7 +89,13 @@ FLOW_ACTIVE_LOW = True   # GPIO LOW = switch closed = water flowing
 # ---------------------------------------------------------------------------
 # Safety interlocks
 # ---------------------------------------------------------------------------
-CELL_PUMP_MIN_SPEED = 1      # Pump must be at least this % for cell to run
+CELL_PUMP_MIN_SPEED   = 1      # Pump must be at least this % for cell to run
+CELL_OVERCURRENT_A    = float(os.getenv("CELL_OVERCURRENT_A",    "9.0"))   # SPEC §7.3
+CELL_UNDERVOLTAGE_V   = float(os.getenv("CELL_UNDERVOLTAGE_V",   "18.0"))  # SPEC §7.3 — no HW channel wired yet
+CELL_OVERVOLTAGE_V    = float(os.getenv("CELL_OVERVOLTAGE_V",    "28.0"))  # SPEC §7.3 — no HW channel wired yet
+# AIN0 polarity verify — forward reads low, reverse reads high.  Set to None to disable.
+POLARITY_FORWARD_MAX_V = float(os.getenv("POLARITY_FORWARD_MAX_V", "0"))   # disabled until calibrated
+POLARITY_REVERSE_MIN_V = float(os.getenv("POLARITY_REVERSE_MIN_V", "0"))   # disabled until calibrated
 CELL_FLOW_DELAY_S   = 60.0   # Continuous flow + pump required before cell on
 PUMP_STABLE_POST_PRIME_S = 30.0  # Seconds past prime end before pump_stable = True (SPEC §2.11)
 CELL_POLARITY_REVERSE_INTERVAL_S = float(os.getenv("CELL_POLARITY_REVERSE_INTERVAL_S", "7200"))  # 2 h

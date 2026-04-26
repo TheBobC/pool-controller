@@ -100,13 +100,20 @@ def set_acs712_powered(on: bool) -> None:
 
 def read_current() -> Optional[float]:
     """Return current in Amperes (signed; positive = load direction).
-    Returns None if ACS712 Vcc has not been energized yet (CH4 gate)."""
+    Returns None if ACS712 Vcc has not been energized yet (CH4 gate).
+    Raises SensorReadError on ADS1115 read failure (for auto-retry, SPEC §7.4)."""
     if not _acs712_powered:
         return None
     v = _ads_voltage(config.ADS_CH_CURRENT)
     if v is None:
-        return None
+        raise SensorReadError("ADS1115 AIN3 read failed")
     return round((v - config.ACS_ZERO_V) / config.ACS_SENSITIVITY, 3)
+
+
+def read_polarity_voltage() -> Optional[float]:
+    """Return AIN0 voltage used to verify polarity relay state (SPEC §6.9, §7.3).
+    Returns None if ADS1115 unavailable."""
+    return _ads_voltage(config.ADS_CH_POLARITY)
 
 
 # ---------------------------------------------------------------------------
@@ -173,18 +180,26 @@ def _init_flow() -> bool:
         return False
 
 
-def read_flow() -> bool:
-    """Return True if water is confirmed flowing."""
+class SensorReadError(Exception):
+    """Raised when a sensor hardware read fails (not just returning None for absent sensor)."""
+
+
+def read_flow() -> Optional[bool]:
+    """Return True if water is confirmed flowing, False if not, None on sensor failure.
+
+    None means GPIO hardware failed mid-read (SPEC §7.3 flow sensor failure).
+    Callers that don't need the distinction can treat None as False.
+    """
     if not _gpio_ok:
-        return False
+        return False  # sensor was never initialized — treat as no-flow, not error
     try:
         import RPi.GPIO as GPIO  # type: ignore
         raw = GPIO.input(config.FLOW_GPIO)
         # Active LOW: pin LOW → switch closed → flow present
         return (raw == 0) if config.FLOW_ACTIVE_LOW else (raw == 1)
     except Exception as exc:
-        logger.debug("Flow GPIO read error: %s", exc)
-        return False
+        logger.warning("Flow GPIO read error: %s", exc)
+        return None  # sensor failure — caller may trip cell
 
 
 # ---------------------------------------------------------------------------

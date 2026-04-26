@@ -492,23 +492,48 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
     """
     global _polarity_on_time_s, _last_cell_on_tick, _polarity_reversing
     global _super_chlorinate_remaining_s
+    loop = asyncio.get_running_loop()
     while not shutdown.is_set():
-        flow = sensors.read_flow()
+        flow_raw = sensors.read_flow()  # None = sensor error (SPEC §7.3)
+
+        # Flow sensor failure fault: gate energized + sensor read error
+        actually_on = cell.get_cell_state()
+        if flow_raw is None and actually_on and _fault_state is None:
+            logger.error("Flow sensor read failure while gate energized — latching fault")
+            handle_cell_trip("flow_sensor_failure", pump.get_speed(), False)
+
+        flow_ok = bool(flow_raw) if flow_raw is not None else False
         safety.update(
             pump_speed=pump.get_speed(),
-            flow_ok=flow,
+            flow_ok=flow_ok,
             cell_requested=_cell_requested,
             set_cell_fn=_duty_gate,
         )
 
-        # Use actual hardware gate state; suppress during the ~6 s polarity switch
+        # Polarity mismatch fault (SPEC §7.3) — enabled only when thresholds are configured
         actually_on = cell.get_cell_state()
+        if (actually_on and _fault_state is None
+                and config.POLARITY_FORWARD_MAX_V > 0 and config.POLARITY_REVERSE_MIN_V > 0):
+            pol_v = sensors.read_polarity_voltage()
+            if pol_v is not None:
+                direction = cell.get_polarity()
+                mismatch = (
+                    (direction == "forward" and pol_v > config.POLARITY_FORWARD_MAX_V)
+                    or (direction == "reverse" and pol_v < config.POLARITY_REVERSE_MIN_V)
+                )
+                if mismatch:
+                    logger.error(
+                        "Polarity mismatch: commanded=%s AIN0=%.3fV — latching fault",
+                        direction, pol_v,
+                    )
+                    handle_cell_trip("polarity_mismatch", pump.get_speed(), flow_ok)
+
         now = time.monotonic()
         if actually_on and not _polarity_reversing:
             if _last_cell_on_tick is not None:
                 delta = now - _last_cell_on_tick
                 _polarity_on_time_s += delta
-                if _super_chlorinate_active and not _service_mode:
+                if _super_chlorinate_active:
                     _super_chlorinate_remaining_s -= delta
                     if _super_chlorinate_remaining_s <= 0:
                         _super_chlorinate_remaining_s = 0.0
@@ -538,9 +563,13 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
     while not shutdown.is_set():
         water_t  = await loop.run_in_executor(None, sensors.read_water_temp)
         air_t    = await loop.run_in_executor(None, sensors.read_air_temp)
-        current  = await loop.run_in_executor(None, sensors.read_current)
+        try:
+            current = await loop.run_in_executor(None, sensors.read_current)
+        except sensors.SensorReadError:
+            current = None  # actual_duty_sample_loop owns the retry/fault logic
         ec       = await loop.run_in_executor(None, sensors.read_conductivity)
-        flow     = sensors.read_flow()
+        flow_raw = sensors.read_flow()
+        flow     = bool(flow_raw) if flow_raw is not None else False
 
         air_t_f = round(air_t * 9 / 5 + 32, 1) if air_t is not None else None
 
@@ -558,7 +587,7 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
             "sensors: water=%s air=%s flow=%s cell_current=%s pump_current=%s ec=%s fans=%s",
             f"{round(water_t * 9/5 + 32, 1)}°F" if water_t is not None else "n/a",
             f"{air_t_f}°F"                        if air_t_f is not None else "n/a",
-            "ON" if flow else "OFF",
+            "ON" if flow else ("ERR" if flow_raw is None else "OFF"),
             f"{current:.3f}A"                     if current is not None else "n/a",
             f"{pump_current:.3f}A"                if pump_current is not None else "n/a",
             f"{ec:.0f}µS/cm"                      if ec is not None else "n/a",
@@ -686,12 +715,38 @@ async def cell_duty_cycle_loop(shutdown: asyncio.Event) -> None:
 
 
 async def actual_duty_sample_loop(shutdown: asyncio.Event) -> None:
-    """Sample ACS712 current at 1 Hz and feed the actual duty tracker."""
+    """Sample ACS712 current at 1 Hz; check overcurrent; feed actual duty tracker."""
     loop = asyncio.get_running_loop()
+    _acs712_fail_count: int = 0
+    _acs712_last_fail: float | None = None
     while not shutdown.is_set():
-        current = await loop.run_in_executor(None, sensors.read_current)
-        if current is not None:
-            _actual_duty.sample(current)
+        try:
+            current = await loop.run_in_executor(None, sensors.read_current)
+        except sensors.SensorReadError as exc:
+            # ADS1115 read failure — auto-retry per SPEC §7.4
+            now = time.monotonic()
+            if _acs712_last_fail is None or (now - _acs712_last_fail) >= 30.0:
+                _acs712_fail_count += 1
+                _acs712_last_fail = now
+                logger.warning("ACS712/ADS1115 read failure (%s) — retry %d/3 in 30s", exc, _acs712_fail_count)
+                if _acs712_fail_count >= 3:
+                    logger.error("ACS712/ADS1115 failed 3 retries — latching critical fault")
+                    _publish_notification("critical", "ACS712/ADS1115 failed after 3 retries — cell disabled")
+                    handle_cell_trip("acs712_failure", pump.get_speed(), bool(sensors.read_flow()))
+                    _acs712_fail_count = 0
+                    _acs712_last_fail = None
+        else:
+            if _acs712_fail_count > 0:
+                logger.info("ACS712 recovered after %d retries", _acs712_fail_count)
+                _publish_notification("warning", f"Transient sensor fault — ACS712 recovered (retry {_acs712_fail_count})")
+                _acs712_fail_count = 0
+                _acs712_last_fail = None
+            if current is not None:
+                _actual_duty.sample(current)
+                # Overcurrent fault (SPEC §7.3): >9A while gate energized
+                if cell.get_cell_state() and current > config.CELL_OVERCURRENT_A and _fault_state is None:
+                    logger.error("Overcurrent: %.3fA > %.1fA — latching fault", current, config.CELL_OVERCURRENT_A)
+                    handle_cell_trip("overcurrent", pump.get_speed(), bool(sensors.read_flow()))
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=1.0)
         except asyncio.TimeoutError:
