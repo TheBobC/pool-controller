@@ -91,6 +91,7 @@ FLOW_ACTIVE_LOW = True   # GPIO LOW = switch closed = water flowing
 # ---------------------------------------------------------------------------
 CELL_PUMP_MIN_SPEED = 1      # Pump must be at least this % for cell to run
 CELL_FLOW_DELAY_S   = 60.0   # Continuous flow + pump required before cell on
+PUMP_STABLE_POST_PRIME_S = 30.0  # Seconds past prime end before pump_stable = True (SPEC §2.11)
 CELL_POLARITY_REVERSE_INTERVAL_S = float(os.getenv("CELL_POLARITY_REVERSE_INTERVAL_S", "7200"))  # 2 h
 SUPER_CHLORINATE_DURATION_S = float(os.getenv("SUPER_CHLORINATE_DURATION_S", "86400"))  # 24 h
 CELL_DUTY_WINDOW_S  = float(os.getenv("CELL_DUTY_WINDOW_S", "600"))   # 10-minute duty cycle window

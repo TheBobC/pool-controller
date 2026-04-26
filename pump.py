@@ -67,6 +67,11 @@ _preload_start_time: float | None = None
 _preload_target: int = 0
 _last_startup_time: float | None = None
 
+# pump_stable state machine (SPEC §2.11):
+# False while off, in prime, or within PUMP_STABLE_POST_PRIME_S after prime ends.
+# True only after that window.  Resets to False on speed→0.
+_post_prime_start: float | None = None  # monotonic timestamp when preload last completed
+
 # Response frame field offsets (0-indexed from frame byte 0 = DLE 0x10)
 # Observed 13-byte format (single-byte CSUM, SRC=0x00):
 #   [0][1] = DLE STX
@@ -183,13 +188,14 @@ def _try_parse_frame(frame: bytes) -> dict | None:
 
 def _tick() -> None:
     """Advance preload state machine.  Called from send_keepalive() while _lock held."""
-    global _speed, _preload_active, _preload_start_time, _preload_target
+    global _speed, _preload_active, _preload_start_time, _preload_target, _post_prime_start
     if not _preload_active or _preload_start_time is None:
         return
     if time.monotonic() - _preload_start_time >= config.CELL_FLOW_DELAY_S:
         _speed = _preload_target
         _preload_active = False
         _preload_start_time = None
+        _post_prime_start = time.monotonic()  # begin post-prime stability window
         logger.info("Pump preload complete, stepping to %d%%", _preload_target)
 
 
@@ -262,6 +268,7 @@ def request_speed(target: int) -> None:
             _preload_start_time = None
             _preload_target = 0
             _last_startup_time = None
+            _post_prime_start = None  # pump_stable → False on stop (SPEC §2.11)
             return
 
         if _preload_active:
@@ -319,6 +326,33 @@ def get_preload_remaining_s() -> int:
     if not _preload_active or _preload_start_time is None:
         return 0
     return max(0, int(config.CELL_FLOW_DELAY_S - (time.monotonic() - _preload_start_time)))
+
+
+def is_stable() -> bool:
+    """True when pump has been past prime for ≥ PUMP_STABLE_POST_PRIME_S (SPEC §2.11).
+
+    False when: pump off, in prime, or within PUMP_STABLE_POST_PRIME_S after prime ends.
+    Resets to False only on speed→0; non-zero speed changes do NOT reset it.
+    """
+    if _speed == 0 or _preload_active:
+        return False
+    if _post_prime_start is None:
+        return False
+    return time.monotonic() - _post_prime_start >= config.PUMP_STABLE_POST_PRIME_S
+
+
+def get_stable_countdown_s() -> int:
+    """Seconds remaining until pump_stable becomes True.  0 when already stable."""
+    if is_stable():
+        return 0
+    if _speed == 0:
+        return int(config.CELL_FLOW_DELAY_S + config.PUMP_STABLE_POST_PRIME_S)
+    if _preload_active and _preload_start_time is not None:
+        preload_remaining = max(0.0, config.CELL_FLOW_DELAY_S - (time.monotonic() - _preload_start_time))
+        return int(preload_remaining + config.PUMP_STABLE_POST_PRIME_S)
+    if _post_prime_start is not None:
+        return max(0, int(config.PUMP_STABLE_POST_PRIME_S - (time.monotonic() - _post_prime_start)))
+    return int(config.PUMP_STABLE_POST_PRIME_S)
 
 
 def is_connected() -> bool:

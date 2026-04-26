@@ -154,11 +154,12 @@ def handle_cell_set(on: bool) -> None:
                 _mqtt.publish("cell/cant_enable_reason", "no_flow", retain=True)
             _publish_notification("error", "Cell enable rejected: no flow detected")
             return
-        if pump.get_speed() < config.CELL_PUMP_MIN_SPEED:
-            logger.warning("Cell enable refused: pump not running (speed=%d%%)", pump.get_speed())
+        if not pump.is_stable():
+            countdown = pump.get_stable_countdown_s()
+            logger.warning("Cell enable refused: pump not stable (countdown=%ds)", countdown)
             if _mqtt:
-                _mqtt.publish("cell/cant_enable_reason", "pump_not_running", retain=True)
-            _publish_notification("error", f"Cell enable rejected: pump not running ({pump.get_speed()}%)")
+                _mqtt.publish("cell/cant_enable_reason", f"pump_not_stable:{countdown}s", retain=True)
+            _publish_notification("error", f"Cell enable rejected: pump not stable ({countdown}s remaining)")
             return
     if on and _cell_output_percent == 0:
         if _super_chlorinate_active:
@@ -352,11 +353,12 @@ def handle_super_chlorinate_set(on: bool) -> None:
                 _mqtt.publish("cell/cant_enable_reason", "no_flow", retain=True)
             _publish_notification("error", "Super Chlorinate rejected: no flow detected")
             return
-        if pump.get_speed() < config.CELL_PUMP_MIN_SPEED:
-            logger.warning("SC refused: pump not running (speed=%d%%)", pump.get_speed())
+        if not pump.is_stable():
+            countdown = pump.get_stable_countdown_s()
+            logger.warning("SC refused: pump not stable (countdown=%ds)", countdown)
             if _mqtt:
-                _mqtt.publish("cell/cant_enable_reason", "pump_not_running", retain=True)
-            _publish_notification("error", f"Super Chlorinate rejected: pump not running ({pump.get_speed()}%)")
+                _mqtt.publish("cell/cant_enable_reason", f"pump_not_stable:{countdown}s", retain=True)
+            _publish_notification("error", f"Super Chlorinate rejected: pump not stable ({countdown}s remaining)")
             return
     if on:
         is_fresh = not _super_chlorinate_active
@@ -456,6 +458,7 @@ async def pump_keepalive_loop(shutdown: asyncio.Event) -> None:
     it runs in a thread-pool executor to keep the asyncio event loop responsive.
     """
     loop = asyncio.get_running_loop()
+    _last_stable: bool | None = None
     while not shutdown.is_set():
         await loop.run_in_executor(None, pump.send_keepalive)
         if _mqtt and _mqtt.is_connected():
@@ -466,6 +469,12 @@ async def pump_keepalive_loop(shutdown: asyncio.Event) -> None:
                 _mqtt.publish("pump/power", telemetry["watts"])
             _mqtt.publish("pump/preload_active",    "ON" if pump.is_preloading() else "OFF")
             _mqtt.publish("pump/preload_remaining_s", pump.get_preload_remaining_s())
+            # Publish pump_stable on change (SPEC §2.11)
+            stable = pump.is_stable()
+            if stable != _last_stable:
+                _mqtt.publish("pump/stable", "ON" if stable else "OFF", retain=True)
+                _mqtt.publish("pump/stable_countdown_s", pump.get_stable_countdown_s())
+                _last_stable = stable
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=config.PUMP_KEEPALIVE_S)
         except asyncio.TimeoutError:
