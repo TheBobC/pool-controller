@@ -85,6 +85,12 @@ _pre_service_mode_state: dict | None = None         # snapshot taken on service 
 # Power recovery: raw state.json snapshot captured before startup overrides
 _startup_snapshot: dict = {}
 
+# Boot grace (SPEC §1.6): hard lockout from service start.
+# Pump commands rejected for 60s; cell/SC commands rejected for 150s.
+_boot_start_time: float = time.monotonic()  # set once; never updated
+_BOOT_PUMP_GRACE_S: float = 60.0
+_BOOT_CELL_GRACE_S: float = 150.0
+
 
 # ---------------------------------------------------------------------------
 # MQTT command handlers
@@ -108,6 +114,16 @@ def handle_speed_set(speed: int) -> None:
 def handle_pump_power_set(on: bool) -> None:
     global _pump_power_on
     logger.info("← pump/power_on/set: %s", "ON" if on else "OFF")
+    # SPEC §1.6: pump boot grace — reject ON commands for 60s after start
+    if on:
+        elapsed = time.monotonic() - _boot_start_time
+        remaining = _BOOT_PUMP_GRACE_S - elapsed
+        if remaining > 0:
+            logger.warning("Pump enable rejected: boot grace (%ds remaining)", int(remaining))
+            _publish_notification("error", f"Pump enable rejected: boot grace ({int(remaining)}s remaining)")
+            if _mqtt:
+                _mqtt.publish("pump/boot_grace_remaining_s", int(remaining))
+            return
     _pump_power_on = on
     state.save({"pump_power_on": on})
     if on:
@@ -153,6 +169,17 @@ def _publish_notification(severity: str, message: str) -> None:
 def handle_cell_set(on: bool) -> None:
     global _cell_requested
     logger.info("← cell/set: %s", "ON" if on else "OFF")
+    # SPEC §1.7: cell boot grace — reject ON commands for 150s after start
+    if on:
+        elapsed = time.monotonic() - _boot_start_time
+        remaining = _BOOT_CELL_GRACE_S - elapsed
+        if remaining > 0:
+            logger.warning("Cell enable rejected: boot grace (%ds remaining)", int(remaining))
+            if _mqtt:
+                _mqtt.publish("cell/cant_enable_reason", f"boot_grace:{int(remaining)}s", retain=True)
+                _mqtt.publish("cell/boot_grace_remaining_s", int(remaining))
+            _publish_notification("error", f"Cell enable rejected: boot grace ({int(remaining)}s remaining)")
+            return
     if on and _fault_state is not None:
         logger.warning("Cell enable refused: fault latched (%s) — reset fault first", _fault_state)
         if _mqtt:
@@ -374,6 +401,17 @@ def _cancel_super_chlorinate(reason: str) -> None:
 def handle_super_chlorinate_set(on: bool) -> None:
     global _super_chlorinate_active, _super_chlorinate_remaining_s, _cell_requested
     logger.info("← cell/super_chlorinate/set: %s", "ON" if on else "OFF")
+    # SPEC §1.7: cell boot grace applies to SC as well
+    if on:
+        elapsed = time.monotonic() - _boot_start_time
+        remaining = _BOOT_CELL_GRACE_S - elapsed
+        if remaining > 0:
+            logger.warning("SC rejected: boot grace (%ds remaining)", int(remaining))
+            if _mqtt:
+                _mqtt.publish("cell/cant_enable_reason", f"boot_grace:{int(remaining)}s", retain=True)
+                _mqtt.publish("cell/boot_grace_remaining_s", int(remaining))
+            _publish_notification("error", f"Super Chlorinate rejected: boot grace ({int(remaining)}s remaining)")
+            return
     if on and _fault_state is not None:
         logger.warning("SC refused: fault latched (%s) — reset fault first", _fault_state)
         if _mqtt:
@@ -814,6 +852,14 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             _mqtt.publish("system/mode",
                           "service" if _service_mode else ("on" if _pump_power_on else "off"),
                           retain=True)
+            # Boot grace countdowns (SPEC §1.8, §1.9)
+            elapsed = time.monotonic() - _boot_start_time
+            pump_grace = max(0, int(_BOOT_PUMP_GRACE_S - elapsed))
+            cell_grace = max(0, int(_BOOT_CELL_GRACE_S - elapsed))
+            _mqtt.publish("pump/boot_grace_remaining_s", pump_grace)
+            _mqtt.publish("cell/boot_grace_remaining_s", cell_grace)
+            # pump_stable countdown (SPEC §3.6)
+            _mqtt.publish("pump/stable_countdown_s", pump.get_stable_countdown_s())
         state.save({
             "polarity_on_time_s": round(_polarity_on_time_s, 1),
             "super_chlorinate_remaining_s": round(_super_chlorinate_remaining_s, 1),
@@ -853,17 +899,19 @@ async def system_health_loop(shutdown: asyncio.Event) -> None:
 # ---------------------------------------------------------------------------
 
 async def power_recovery_task(shutdown: asyncio.Event) -> None:
-    """Wait POWER_RECOVERY_GRACE_S after startup, then auto-resume pre-restart state.
+    """Wait until boot grace expires, then auto-resume pre-restart state.
 
-    Grace period lets MQTT connect, sensors stabilise, and HA re-sync before
-    any automatic pump/cell commands are issued.  Reads _startup_snapshot (the
+    Waits for the cell grace period (_BOOT_CELL_GRACE_S=150s) so auto-resume
+    doesn't fire inside the command lockout window.  Reads _startup_snapshot (the
     raw state.json values captured before startup overrides) to determine what
     to resume.
     """
     global _pump_power_on, _cell_requested
-    logger.info("Power recovery: %.0fs grace period starting", config.POWER_RECOVERY_GRACE_S)
+    # Wait for the full cell grace window (150s) so auto-resume doesn't race with the lockout
+    grace_wait = _BOOT_CELL_GRACE_S
+    logger.info("Power recovery: waiting %.0fs (cell boot grace) before auto-resume", grace_wait)
     try:
-        await asyncio.wait_for(shutdown.wait(), timeout=config.POWER_RECOVERY_GRACE_S)
+        await asyncio.wait_for(shutdown.wait(), timeout=grace_wait)
         logger.info("Power recovery: shutdown during grace period — skipping resume")
         return
     except asyncio.TimeoutError:
