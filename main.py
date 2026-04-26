@@ -68,6 +68,7 @@ _super_chlorinate_remaining_s: float = 0.0  # seconds of cell-on time remaining
 # cell_duty_cycle_loop drives the gate; safety_check_loop sets _interlocks_ok.
 _cell_output_percent: int = 0
 _interlocks_ok: bool = False  # True when safety permits the gate to be energised
+_fault_state: str | None = None  # None = no fault; string = latched fault name (SPEC §7.1)
 
 # Actual duty tracker: ACS712-based rolling 30-min measurement.
 _actual_duty: actual_duty.ActualDutyTracker = actual_duty.ActualDutyTracker()
@@ -129,6 +130,11 @@ def handle_pump_power_set(on: bool) -> None:
 def handle_cell_set(on: bool) -> None:
     global _cell_requested
     logger.info("← cell/set: %s", "ON" if on else "OFF")
+    if on and _fault_state is not None:
+        logger.warning("Cell enable refused: fault latched (%s) — reset fault first", _fault_state)
+        if _mqtt:
+            _mqtt.publish("cell/cant_enable_reason", f"fault_latched:{_fault_state}", retain=True)
+        return
     if on and _cell_output_percent == 0:
         if _super_chlorinate_active:
             handle_output_set(100)
@@ -158,14 +164,27 @@ def handle_cell_set(on: bool) -> None:
 
 
 def handle_cell_trip(reason: str, pump_speed: int, flow_ok: bool) -> None:
-    logger.warning("Cell trip event: reason=%s pump_speed=%d flow=%s", reason, pump_speed, flow_ok)
+    global _fault_state, _cell_requested, _cell_output_percent
+    logger.warning(
+        "Cell trip event: reason=%s pump_speed=%d flow=%s — latching fault",
+        reason, pump_speed, flow_ok,
+    )
+    # SPEC §7.1: faults latch.  §7.2: gate de-energized (safety already did it),
+    # cell_on forced False, cell_output_percent forced 0.  §7.11: individual topic.
+    _fault_state = reason
+    _cell_requested = False
+    _cell_output_percent = 0
     if _super_chlorinate_active:
         _cancel_super_chlorinate("safety trip")
+    state.save({"fault_state": reason, "cell_on": False, "cell_output_percent": 0})
     if _mqtt:
-        _mqtt.publish("events/cell_trip", json.dumps({
-            "reason": reason,
+        _mqtt.publish("fault/state",       reason,                          retain=True)
+        _mqtt.publish("cell/on",           "OFF",                           retain=True)
+        _mqtt.publish("cell/output",       0,                               retain=True)
+        _mqtt.publish("events/cell_trip",  json.dumps({
+            "reason":     reason,
             "pump_speed": pump_speed,
-            "flow_ok": flow_ok,
+            "flow_ok":    flow_ok,
         }))
 
 
@@ -212,6 +231,9 @@ def _duty_gate(allow: bool) -> None:
     takes over gate control.  Never calls cell.set_cell(True) directly.
     """
     global _interlocks_ok
+    # SPEC §7.1: latched fault blocks re-energization
+    if allow and _fault_state is not None:
+        allow = False
     _interlocks_ok = allow
     if not allow:
         cell.set_cell(False)
@@ -276,6 +298,11 @@ def _cancel_super_chlorinate(reason: str) -> None:
 def handle_super_chlorinate_set(on: bool) -> None:
     global _super_chlorinate_active, _super_chlorinate_remaining_s, _cell_requested
     logger.info("← cell/super_chlorinate/set: %s", "ON" if on else "OFF")
+    if on and _fault_state is not None:
+        logger.warning("SC refused: fault latched (%s) — reset fault first", _fault_state)
+        if _mqtt:
+            _mqtt.publish("cell/cant_enable_reason", f"fault_latched:{_fault_state}", retain=True)
+        return
     if on:
         is_fresh = not _super_chlorinate_active
         if is_fresh:
@@ -764,7 +791,7 @@ async def power_recovery_task(shutdown: asyncio.Event) -> None:
 async def main() -> None:
     global _mqtt, _cell_requested, _polarity_on_time_s
     global _super_chlorinate_active, _super_chlorinate_remaining_s
-    global _cell_output_percent, _pump_power_on
+    global _cell_output_percent, _pump_power_on, _fault_state
     global _startup_snapshot, _service_mode, _service_mode_entered_at, _pre_service_mode_state
 
     # --- Restore persisted state ---
@@ -787,6 +814,9 @@ async def main() -> None:
         _super_chlorinate_remaining_s = 0.0
     _raw_output = saved.get("cell_output_percent", config.CELL_OUTPUT_DEFAULT)
     _cell_output_percent = int(_raw_output) if _raw_output is not None else 0
+    _fault_state = saved.get("fault_state")  # None = no latched fault; string = fault name
+    if _fault_state:
+        logger.warning("Restoring latched fault from state.json: %s — cell disabled until reset", _fault_state)
     # Clear super chlorinate if it already ran out
     if _super_chlorinate_active and _super_chlorinate_remaining_s <= 0:
         _super_chlorinate_active = False

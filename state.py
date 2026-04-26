@@ -28,6 +28,7 @@ _DEFAULTS: dict[str, Any] = {
     "service_mode": False,
     "service_mode_entered_at": None,
     "pre_service_mode_state": None,
+    "fault_state": None,
     "last_state_write": None,
 }
 
