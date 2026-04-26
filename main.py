@@ -105,7 +105,7 @@ def handle_speed_set(speed: int) -> None:
     if speed == 0 and pump.get_speed() > 0:
         safety.reset_timer()
     pump.request_speed(speed)
-    state.save({"pump_speed": speed})
+    state.save({"pump_output_percent": speed})
     if _mqtt:
         _mqtt.publish("pump/speed",   pump.get_target_speed(),               retain=True)
         _mqtt.publish("pump/running", "ON" if pump.get_speed() > 0 else "OFF", retain=True)
@@ -125,9 +125,9 @@ def handle_pump_power_set(on: bool) -> None:
                 _mqtt.publish("pump/boot_grace_remaining_s", int(remaining))
             return
     _pump_power_on = on
-    state.save({"pump_power_on": on})
+    state.save({"pump_on": on})
     if on:
-        spd = state.get("pump_speed", 0)
+        spd = state.get("pump_output_percent", 0)
         pump.request_speed(spd)   # triggers preload if spd > 0
         if _mqtt:
             _mqtt.publish("pump/power_on", "ON",                                   retain=True)
@@ -307,7 +307,7 @@ async def _auto_polarity_reverse() -> None:
     old_polarity = cell.get_polarity()
     new_polarity = await loop.run_in_executor(None, cell.toggle_polarity)
     _polarity_on_time_s = 0.0
-    state.save({"polarity_on_time_s": 0.0, "polarity_direction": new_polarity})
+    state.save({"polarity_on_time_accumulator": 0.0, "polarity_direction": new_polarity})
     _polarity_reversing = False
     _verify_polarity_after_switch(new_polarity, bool(sensors.read_flow()))
     logger.info(
@@ -391,7 +391,7 @@ def _cancel_super_chlorinate(reason: str) -> None:
     global _super_chlorinate_active, _super_chlorinate_remaining_s
     _super_chlorinate_active = False
     _super_chlorinate_remaining_s = 0.0
-    state.save({"super_chlorinate_active": False, "super_chlorinate_remaining_s": 0.0})
+    state.save({"super_chlorinate_active": False, "super_chlorinate_remaining": 0.0})
     logger.info("Super chlorinate cleared: %s", reason)
     _publish_super_chlorinate_state()
     if _mqtt:
@@ -442,7 +442,7 @@ def handle_super_chlorinate_set(on: bool) -> None:
         _cell_requested = True
         state.save({
             "super_chlorinate_active": True,
-            "super_chlorinate_remaining_s": _super_chlorinate_remaining_s,
+            "super_chlorinate_remaining": _super_chlorinate_remaining_s,
             "cell_on": True,
         })
         logger.info("Super chlorinate %s — %.2f h cell-on time remaining",
@@ -566,6 +566,7 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
     global _polarity_on_time_s, _last_cell_on_tick, _polarity_reversing
     global _super_chlorinate_remaining_s
     loop = asyncio.get_running_loop()
+    _polarity_persist_ticks: int = 0  # count 1s ticks; write accumulator every 10s when gate on
     while not shutdown.is_set():
         flow_raw = sensors.read_flow()  # None = sensor error (SPEC §7.3)
 
@@ -620,6 +621,15 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
                 and _polarity_on_time_s >= config.CELL_POLARITY_REVERSE_INTERVAL_S):
             _polarity_reversing = True
             asyncio.create_task(_auto_polarity_reverse(), name="polarity-auto-reverse")
+
+        # Write polarity accumulator every 10s while gate energized (SPEC §9.3)
+        if actually_on:
+            _polarity_persist_ticks += 1
+            if _polarity_persist_ticks >= 10:
+                state.save({"polarity_on_time_accumulator": round(_polarity_on_time_s, 1)})
+                _polarity_persist_ticks = 0
+        else:
+            _polarity_persist_ticks = 0
 
         if _mqtt:
             _mqtt.publish("cell/state",     "ON" if actually_on else "OFF",          retain=True)
@@ -825,10 +835,17 @@ async def actual_duty_sample_loop(shutdown: asyncio.Event) -> None:
 
 async def state_publish_loop(shutdown: asyncio.Event) -> None:
     """Re-publish retained state every 60 s (handles HA restarts); persist polarity timer."""
+    _corrupt_notified = False
     while not shutdown.is_set():
         # Safety-net expiry check (primary check is in safety_check_loop at 1 Hz)
         if _super_chlorinate_active and _super_chlorinate_remaining_s <= 0:
             _cancel_super_chlorinate("auto-expired")
+
+        # One-shot: notify HA if state.json was corrupt on startup (SPEC §9.5)
+        if not _corrupt_notified and _mqtt and _mqtt.is_connected() and state.was_load_failed():
+            _publish_notification("critical",
+                "state.json missing or corrupt — loaded defaults, awaiting HA schedule")
+            _corrupt_notified = True
 
         if _mqtt and _mqtt.is_connected():
             _mqtt.publish("pump/power_on", "ON" if _pump_power_on else "OFF",         retain=True)
@@ -861,8 +878,8 @@ async def state_publish_loop(shutdown: asyncio.Event) -> None:
             # pump_stable countdown (SPEC §3.6)
             _mqtt.publish("pump/stable_countdown_s", pump.get_stable_countdown_s())
         state.save({
-            "polarity_on_time_s": round(_polarity_on_time_s, 1),
-            "super_chlorinate_remaining_s": round(_super_chlorinate_remaining_s, 1),
+            "polarity_on_time_accumulator": round(_polarity_on_time_s, 1),
+            "super_chlorinate_remaining": round(_super_chlorinate_remaining_s, 1),
         })
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=60.0)
@@ -943,7 +960,7 @@ async def power_recovery_task(shutdown: asyncio.Event) -> None:
 
     if snap.get("super_chlorinate_active") and _super_chlorinate_remaining_s > 0:
         # SC was active and still has cell-on time remaining
-        saved_speed  = snap.get("pump_speed", 0)
+        saved_speed  = snap.get("pump_output_percent", snap.get("pump_speed", 0))
         resume_speed = max(saved_speed, config.SC_PUMP_SPEED_DEFAULT)
         logger.info(
             "Power recovery: resuming SC (%.0fs remaining, pump→%d%%)",
@@ -952,7 +969,7 @@ async def power_recovery_task(shutdown: asyncio.Event) -> None:
         pump.request_speed(resume_speed)
         _pump_power_on  = True
         _cell_requested = True
-        state.save({"pump_power_on": True, "pump_speed": resume_speed, "cell_on": True})
+        state.save({"pump_on": True, "pump_output_percent": resume_speed, "cell_on": True})
         if _mqtt:
             _mqtt.publish("pump/power_on", "ON",                                    retain=True)
             _mqtt.publish("pump/speed",    pump.get_target_speed(),                  retain=True)
@@ -967,11 +984,11 @@ async def power_recovery_task(shutdown: asyncio.Event) -> None:
     else:
         # Normal schedule resume: restore last known pump/cell state
         logger.info("Power recovery: resuming normal schedule state")
-        if snap.get("pump_power_on"):
-            saved_speed = snap.get("pump_speed", 0)
+        if snap.get("pump_on", snap.get("pump_power_on")):
+            saved_speed = snap.get("pump_output_percent", snap.get("pump_speed", 0))
             pump.request_speed(saved_speed)
             _pump_power_on = True
-            state.save({"pump_power_on": True, "pump_speed": saved_speed})
+            state.save({"pump_on": True, "pump_output_percent": saved_speed})
             if _mqtt:
                 _mqtt.publish("pump/power_on", "ON",                                    retain=True)
                 _mqtt.publish("pump/speed",    pump.get_target_speed(),                  retain=True)
@@ -997,16 +1014,23 @@ async def main() -> None:
     # --- Restore persisted state ---
     saved = state.load()
     _startup_snapshot = dict(saved)
+    # Publish critical notification if state.json was missing or corrupt (SPEC §9.5)
+    # (MQTT not yet connected here; notification queued and sent after connect below)
     _service_mode = bool(saved.get("service_mode", False))
     _service_mode_entered_at = saved.get("service_mode_entered_at")
     _pre_service_mode_state = saved.get("pre_service_mode_state")
     _cell_requested = False   # never auto-enable cell on restart
     _pump_power_on  = False   # never auto-enable pump on restart
     pump.request_speed(0)     # keepalive sends 0 until user explicitly enables pump power
-    _polarity_on_time_s = float(saved.get("polarity_on_time_s", 0.0))
+    # polarity_on_time_accumulator (new name); fall back to old name for one-boot migration
+    _polarity_on_time_s = float(saved.get("polarity_on_time_accumulator",
+                                          saved.get("polarity_on_time_s", 0.0)))
     _super_chlorinate_active = bool(saved.get("super_chlorinate_active", False))
-    # Migrate: old installs stored expires_at (wall-clock); convert to remaining_s on first load
-    if "super_chlorinate_remaining_s" in saved:
+    # SC remaining: new key "super_chlorinate_remaining", old "super_chlorinate_remaining_s",
+    # older still "super_chlorinate_expires_at" (wall-clock epoch — obsolete)
+    if "super_chlorinate_remaining" in saved:
+        _super_chlorinate_remaining_s = float(saved["super_chlorinate_remaining"])
+    elif "super_chlorinate_remaining_s" in saved:
         _super_chlorinate_remaining_s = float(saved["super_chlorinate_remaining_s"])
     elif "super_chlorinate_expires_at" in saved:
         _super_chlorinate_remaining_s = max(0.0, float(saved["super_chlorinate_expires_at"]) - time.time())
@@ -1021,7 +1045,7 @@ async def main() -> None:
     if _super_chlorinate_active and _super_chlorinate_remaining_s <= 0:
         _super_chlorinate_active = False
         _super_chlorinate_remaining_s = 0.0
-        state.save({"super_chlorinate_active": False, "super_chlorinate_remaining_s": 0.0})
+        state.save({"super_chlorinate_active": False, "super_chlorinate_remaining": 0.0})
         logger.info("Super chlorinate had no remaining cell-on time — cleared")
 
     # --- Hardware init (all non-fatal) ---
