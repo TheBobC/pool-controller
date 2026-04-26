@@ -73,6 +73,10 @@ _fault_state: str | None = None  # None = no fault; string = latched fault name 
 # Actual duty tracker: ACS712-based rolling 30-min measurement.
 _actual_duty: actual_duty.ActualDutyTracker = actual_duty.ActualDutyTracker()
 
+# Last successfully read cell current — shared between actual_duty_sample_loop (1 Hz)
+# and fast_sensor_loop (15 s), avoiding a redundant ACS712 read.
+_last_current_a: float | None = None
+
 # Pump power: gates all speed commands.  Boots OFF — user must explicitly enable.
 # When OFF, keepalive still runs but sends speed=0 so pump doesn't revert to panel.
 _pump_power_on: bool = False
@@ -570,6 +574,7 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
     global _super_chlorinate_remaining_s
     loop = asyncio.get_running_loop()
     _polarity_persist_ticks: int = 0  # count 1s ticks; write accumulator every 10s when gate on
+    _last_gate_state: bool | None = None  # track on-change publish for cell/gate_state
     while not shutdown.is_set():
         flow_raw = sensors.read_flow()  # None = sensor error (SPEC §7.3)
 
@@ -635,7 +640,10 @@ async def safety_check_loop(shutdown: asyncio.Event) -> None:
             _polarity_persist_ticks = 0
 
         if _mqtt:
-            _mqtt.publish("cell/gate_state", "ON" if actually_on else "OFF",          retain=True)
+            # cell/gate_state: on-change only (SPEC §10.4); state_publish_loop handles 60s re-pub
+            if actually_on != _last_gate_state:
+                _mqtt.publish("cell/gate_state", "ON" if actually_on else "OFF", retain=True)
+                _last_gate_state = actually_on
             _mqtt.publish("cell/interlock",  "ON" if safety.is_interlock_ok() else "OFF")
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=1.0)
@@ -685,8 +693,6 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
                 _mqtt.publish("sensors/water_temp",   round(water_t * 9 / 5 + 32, 1))
             if air_t_f is not None:
                 _mqtt.publish("sensors/air_temp",     air_t_f)
-            if current is not None:
-                _mqtt.publish("cell/current_amps",    current)
             if pump_current is not None:
                 _mqtt.publish("sensors/pump_current", pump_current)
             if ec is not None:
@@ -695,7 +701,7 @@ async def sensor_read_loop(shutdown: asyncio.Event) -> None:
             _mqtt.publish("fans/state",  "ON" if fan_on else "OFF", retain=True)
 
         try:
-            await asyncio.wait_for(shutdown.wait(), timeout=30.0)
+            await asyncio.wait_for(shutdown.wait(), timeout=60.0)
         except asyncio.TimeoutError:
             pass
 
@@ -798,7 +804,8 @@ async def cell_duty_cycle_loop(shutdown: asyncio.Event) -> None:
 
 
 async def actual_duty_sample_loop(shutdown: asyncio.Event) -> None:
-    """Sample ACS712 current at 1 Hz; check overcurrent; feed actual duty tracker."""
+    """Sample ACS712 current at 1 Hz; check overcurrent; feed actual duty tracker.
+    Updates _last_current_a so fast_sensor_loop can publish without re-reading hardware."""
     loop = asyncio.get_running_loop()
     _acs712_fail_count: int = 0
     _acs712_last_fail: float | None = None
@@ -825,6 +832,8 @@ async def actual_duty_sample_loop(shutdown: asyncio.Event) -> None:
                 _acs712_fail_count = 0
                 _acs712_last_fail = None
             if current is not None:
+                global _last_current_a
+                _last_current_a = current
                 _actual_duty.sample(current)
                 # Overcurrent fault (SPEC §7.3): >9A while gate energized
                 if cell.get_cell_state() and current > config.CELL_OVERCURRENT_A and _fault_state is None:
@@ -910,7 +919,20 @@ async def system_health_loop(shutdown: asyncio.Event) -> None:
             if health["wifi_signal"] is not None:
                 _mqtt.publish("system/wifi_signal", health["wifi_signal"])
         try:
-            await asyncio.wait_for(shutdown.wait(), timeout=30.0)
+            await asyncio.wait_for(shutdown.wait(), timeout=60.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def fast_sensor_loop(shutdown: asyncio.Event) -> None:
+    """Publish 15-second group: cell/current_amps, cell/polarity_direction (SPEC §10.4)."""
+    while not shutdown.is_set():
+        if _mqtt and _mqtt.is_connected():
+            if _last_current_a is not None:
+                _mqtt.publish("cell/current_amps", _last_current_a)
+            _mqtt.publish("cell/polarity_direction", cell.get_polarity(), retain=True)
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=15.0)
         except asyncio.TimeoutError:
             pass
 
@@ -1093,16 +1115,17 @@ async def main() -> None:
 
     # --- Run all tasks concurrently ---
     tasks = [
-        asyncio.create_task(pump_keepalive_loop(shutdown),   name="pump-keepalive"),
-        asyncio.create_task(safety_check_loop(shutdown),     name="safety"),
-        asyncio.create_task(cell_duty_cycle_loop(shutdown),  name="cell-duty"),
-        asyncio.create_task(actual_duty_sample_loop(shutdown), name="actual-duty-sample"),
-        asyncio.create_task(sensor_read_loop(shutdown),      name="sensors"),
-        asyncio.create_task(state_publish_loop(shutdown),    name="state-pub"),
-        asyncio.create_task(system_health_loop(shutdown),    name="system-health"),
-        asyncio.create_task(_mqtt.message_loop(),             name="mqtt-rx"),
-        asyncio.create_task(acs712_power_on_task(),          name="acs712-power-on"),
-        asyncio.create_task(power_recovery_task(shutdown), name="power-recovery"),
+        asyncio.create_task(pump_keepalive_loop(shutdown),      name="pump-keepalive"),
+        asyncio.create_task(safety_check_loop(shutdown),        name="safety"),
+        asyncio.create_task(cell_duty_cycle_loop(shutdown),     name="cell-duty"),
+        asyncio.create_task(actual_duty_sample_loop(shutdown),  name="actual-duty-sample"),
+        asyncio.create_task(fast_sensor_loop(shutdown),         name="fast-sensors"),
+        asyncio.create_task(sensor_read_loop(shutdown),         name="sensors"),
+        asyncio.create_task(state_publish_loop(shutdown),       name="state-pub"),
+        asyncio.create_task(system_health_loop(shutdown),       name="system-health"),
+        asyncio.create_task(_mqtt.message_loop(),               name="mqtt-rx"),
+        asyncio.create_task(acs712_power_on_task(),             name="acs712-power-on"),
+        asyncio.create_task(power_recovery_task(shutdown),      name="power-recovery"),
     ]
 
     await shutdown.wait()
