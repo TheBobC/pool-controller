@@ -231,9 +231,12 @@ def handle_cell_set(on: bool) -> None:
             _mqtt.publish("pump/output_percent", pump.get_target_speed(),               retain=True)
             _mqtt.publish("pump/running",        "ON" if pump.get_speed() > 0 else "OFF", retain=True)
     _cell_requested = on
+    if not on:
+        _actual_duty.notify_cell_off()
     state.save({"cell_on": on})
     if _mqtt:
-        _mqtt.publish("cell/on", "ON" if _cell_requested else "OFF", retain=True)
+        _mqtt.publish("cell/on",           "ON" if _cell_requested else "OFF", retain=True)
+        _mqtt.publish("cell/output_percent", _effective_cell_output(),          retain=True)
 
 
 def handle_cell_trip(reason: str, pump_speed: int, flow_ok: bool) -> None:
@@ -247,6 +250,7 @@ def handle_cell_trip(reason: str, pump_speed: int, flow_ok: bool) -> None:
     _fault_state = reason
     _cell_requested = False
     _cell_output_percent = 0
+    _actual_duty.notify_cell_off()
     if _super_chlorinate_active:
         _cancel_super_chlorinate("safety trip")
     state.save({"fault_state": reason, "cell_on": False, "cell_output_percent": 0})

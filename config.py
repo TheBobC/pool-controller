@@ -94,6 +94,7 @@ FLOW_ACTIVE_LOW = True   # GPIO LOW = switch closed = water flowing
 # ---------------------------------------------------------------------------
 CELL_PUMP_MIN_SPEED   = 1      # Pump must be at least this % for cell to run
 CELL_OVERCURRENT_A    = float(os.getenv("CELL_OVERCURRENT_A",    "9.0"))   # SPEC §7.3
+CELL_FULL_ON_AMPS     = float(os.getenv("CELL_FULL_ON_AMPS",     "3.5"))   # 100% reference for actual_duty_pct
 CELL_UNDERVOLTAGE_V   = float(os.getenv("CELL_UNDERVOLTAGE_V",   "18.0"))  # SPEC §7.3 — no HW channel wired yet
 CELL_OVERVOLTAGE_V    = float(os.getenv("CELL_OVERVOLTAGE_V",    "28.0"))  # SPEC §7.3 — no HW channel wired yet
 # AIN0 polarity verify — forward reads low, reverse reads high.  Set to None to disable.
